@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const { useState, useEffect, useRef, useCallback } = React;
 
-    const APP_VERSION = '0.2.2';
+    const APP_VERSION = '0.2.3';
     const HEADERS = { 'x-calendar-client': '1' };
     const ORDER_KEY = 'dsh-calendar-task-order-v1';
     const TIMES_KEY = 'dsh-calendar-task-times-v1';
