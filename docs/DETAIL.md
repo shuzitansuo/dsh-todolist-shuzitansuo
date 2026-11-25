@@ -144,9 +144,10 @@
 
 ## 检查更新
 
-左侧栏底部的「检查更新」会读取 GitHub 仓库的最新 Release；仓库只打了 Tag、没有发 Release 时，读取最新 Tag。版本号与 `package.json` 的 `version` 比较，有更新时显示更新说明和 GitHub 链接。
+左侧栏底部的「检查更新」会读取 GitHub 仓库的最新 Release；仓库只打了 Tag、没有发 Release 时，读取最新 Tag。版本号与 `package.json` 的 `version` 比较，有更新时显示更新说明和「自动更新」按钮。
 
 - 第一次使用需要在弹窗里填写仓库，例如 `owner/repo` 或 `https://github.com/owner/repo`，保存在本机数据库，不会上传任何数据。
 - 也可以在启动前设置 `DSH_CALENDAR_REPO=owner/repo`，或在 `package.json` 的 `repository` 字段里写仓库地址，安装后默认就有更新源。
-- 这里只检查和跳转，不会自动覆盖安装；下载新版本后按插件安装流程更新即可。
-- 发布新版本时先改 `package.json` 的 `version`，再打 `v0.2.0` 这样的 Tag；建议同时创建 Release 并写更新说明。
+- 点击「自动更新」后，插件会下载对应 Tag 的源码包，校验包名和版本，备份当前插件到 `~/.dsh/calendar/backups/`，再替换运行文件；不会改动数据库、`.git` 和 `node_modules`。失败会回滚。
+- 更新成功后会自动重启 DSH；开发模式、非 Electron 运行或设置 `DSH_CALENDAR_NO_RESTART=1` 时只提示重启。更新过程中正在计时的番茄钟会阻止更新，避免丢计时。
+- 发布新版本时先改 `package.json` 的 `version`，再打 `v0.2.1` 这样的 Tag；建议同时创建 Release 并写更新说明。

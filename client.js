@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const { useState, useEffect, useRef, useCallback } = React;
 
-    const APP_VERSION = '0.2.0';
+    const APP_VERSION = '0.2.1';
     const HEADERS = { 'x-calendar-client': '1' };
     const ORDER_KEY = 'dsh-calendar-task-order-v1';
     const TIMES_KEY = 'dsh-calendar-task-times-v1';
@@ -1407,7 +1407,7 @@ window.__ModuleLoader__.load({
       };
 
       const openUpdatePanel = () => {
-        setUpdatePanel({ open: true, loading: true, data: null, error: '', repoInput: '', editingRepo: false, saving: false });
+        setUpdatePanel({ open: true, loading: true, applying: false, data: null, result: null, restart: null, error: '', repoInput: '', editingRepo: false, saving: false });
         void fetchUpdate();
       };
 
@@ -1419,6 +1419,33 @@ window.__ModuleLoader__.load({
           return;
         }
         void fetchUpdate({ repo, force: true });
+      };
+
+      const applyUpdateNow = async () => {
+        if (!updatePanel || !updatePanel.data || !updatePanel.data.hasUpdate) return;
+        if (pomoTimer && pomoTimer.running) {
+          setUpdatePanel((prev) => (prev ? Object.assign({}, prev, { error: '番茄钟正在计时，暂停或结束后再更新' }) : prev));
+          return;
+        }
+        setUpdatePanel((prev) => (prev ? Object.assign({}, prev, { applying: true, error: '', result: null, restart: null }) : prev));
+        try {
+          const res = await api('/calendar/api/update-apply', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ restart: true }),
+          });
+          setUpdatePanel((prev) => (prev
+            ? Object.assign({}, prev, {
+                applying: false,
+                result: res.update || null,
+                restart: res.restart || null,
+              })
+            : prev));
+        } catch (error) {
+          setUpdatePanel((prev) => (prev
+            ? Object.assign({}, prev, { applying: false, error: error.message })
+            : prev));
+        }
       };
 
       const [calDragSource, setCalDragSource] = useState(null);
@@ -6319,7 +6346,10 @@ window.__ModuleLoader__.load({
         const data = updatePanel.data || {};
         const repo = data.repo || updatePanel.repoInput;
         const notes = String(data.notes || '').trim();
-        const close = () => setUpdatePanel(null);
+        const close = () => {
+          if (updatePanel.applying) return;
+          setUpdatePanel(null);
+        };
         return h(
           'div',
           {
@@ -6344,12 +6374,15 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'lc-modal-body lc-update-body' },
-              updatePanel.loading
+              updatePanel.loading || updatePanel.applying
                 ? h(
                     'div',
                     { className: 'lc-update-loading' },
                     h('span', { className: 'lc-spinner' }),
-                    h('span', null, updatePanel.saving ? '正在保存更新源…' : '正在连接 GitHub…'),
+                    h('span', null,
+                      updatePanel.applying
+                        ? '正在下载并自动更新…'
+                        : updatePanel.saving ? '正在保存更新源…' : '正在连接 GitHub…'),
                   )
                 : h(
                     'div',
@@ -6382,20 +6415,33 @@ window.__ModuleLoader__.load({
                             '把插件上传到 GitHub 并打 Tag（例如 v0.2.0）后，把仓库地址填在这里。只保存在本机数据库，不会上传任何数据。',
                           ),
                         ),
-                    data.configured && !updatePanel.error
+                    updatePanel.result
                       ? h(
                           'div',
-                          { className: 'lc-update-status ' + (data.hasUpdate ? 'is-new' : 'is-latest') },
-                          h(GlyphIcon, { name: data.hasUpdate ? 'download' : 'check', size: 16 }),
+                          { className: 'lc-update-status is-latest' },
+                          h(GlyphIcon, { name: 'check', size: 16 }),
                           h(
                             'span',
                             null,
-                            data.hasUpdate
-                              ? '发现新版本 ' + data.tag + '，可以前往 GitHub 更新。'
-                              : '已经是最新版本。',
+                            updatePanel.restart && updatePanel.restart.started
+                              ? '已自动更新到 v' + updatePanel.result.to + '，正在重启 DSH…'
+                              : '已自动更新到 v' + updatePanel.result.to + '，重启 DSH 后生效。',
                           ),
                         )
-                      : null,
+                      : data.configured && !updatePanel.error
+                        ? h(
+                            'div',
+                            { className: 'lc-update-status ' + (data.hasUpdate ? 'is-new' : 'is-latest') },
+                            h(GlyphIcon, { name: data.hasUpdate ? 'download' : 'check', size: 16 }),
+                            h(
+                              'span',
+                              null,
+                              data.hasUpdate
+                                ? '发现新版本 ' + data.tag + '，可自动更新，无需手动下载。'
+                                : '已经是最新版本。',
+                            ),
+                          )
+                        : null,
                     updatePanel.error
                       ? h('div', { className: 'lc-update-error' }, updatePanel.error)
                       : null,
@@ -6456,17 +6502,17 @@ window.__ModuleLoader__.load({
               { className: 'lc-modal-foot lc-update-foot' },
               h(
                 'button',
-                { type: 'button', className: 'lc-btn lc-btn-ghost', onClick: close },
-                '关闭',
+                { type: 'button', className: 'lc-btn lc-btn-ghost', onClick: close, disabled: updatePanel.applying },
+                updatePanel.result ? '关闭' : '取消',
               ),
-              data.configured
+              data.configured && !updatePanel.result
                 ? h(
                     'button',
                     {
                       type: 'button',
                       className: 'lc-btn lc-btn-ghost',
                       onClick: () => fetchUpdate({ force: true }),
-                      disabled: updatePanel.loading,
+                      disabled: updatePanel.loading || updatePanel.applying,
                     },
                     '重新检查',
                   )
@@ -6493,16 +6539,29 @@ window.__ModuleLoader__.load({
                       },
                       '保存并检查',
                     )
-                  : h(
-                      'a',
-                      {
-                        className: 'lc-btn lc-btn-primary',
-                        href: data.htmlUrl || 'https://github.com/' + repo,
-                        target: '_blank',
-                        rel: 'noreferrer',
-                      },
-                      '打开 GitHub',
-                    ),
+                  : updatePanel.result
+                    ? null
+                    : data.hasUpdate
+                      ? h(
+                          'button',
+                          {
+                            type: 'button',
+                            className: 'lc-btn lc-btn-primary',
+                            onClick: applyUpdateNow,
+                            disabled: updatePanel.applying || updatePanel.loading,
+                          },
+                          updatePanel.applying ? '正在自动更新…' : '自动更新到 ' + data.tag,
+                        )
+                      : h(
+                          'a',
+                          {
+                            className: 'lc-btn lc-btn-ghost',
+                            href: data.htmlUrl || 'https://github.com/' + repo,
+                            target: '_blank',
+                            rel: 'noreferrer',
+                          },
+                          '查看 GitHub',
+                        ),
             ),
           ),
         );

@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-calendar",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "本地任务日历、番茄钟与工作总结：任务分类与彩色卡片、周/月/日视图、任务清单、看板视图、四象限、KISS 复盘、手写感想、每日 48 格时间带、子任务清单、番茄统计、可配置的日视图时间范围与 macOS 本机日历日程同步，Obsidian 今日任务与总结日志写入，数据保存在本机 SQLite",
   "type": "module",
