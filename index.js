@@ -8,6 +8,7 @@
 import { calendarPaths } from './lib/paths.js'
 import { openCalendar } from './lib/store.js'
 import { API_PREFIX, createCalendarHandler } from './lib/api.js'
+import { createObsidianSync } from './lib/obsidian.js'
 
 export const name = 'dsh-calendar'
 
@@ -32,9 +33,14 @@ export function apply(ctx, config = {}) {
     return
   }
 
-  const handler = createCalendarHandler(store, () => paths.dbFile, paths.home)
+  const obsidian = createObsidianSync(store)
+  obsidian.start()
+  const handler = createCalendarHandler(store, () => paths.dbFile, paths.home, obsidian)
 
-  ctx.effect(() => () => store.close(), 'calendar: sqlite')
+  ctx.effect(() => () => {
+    obsidian.stop()
+    store.close()
+  }, 'calendar: sqlite and obsidian timer')
 
   ctx.inject(['webServer'], (scope) => {
     scope.effect(

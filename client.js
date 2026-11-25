@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const { useState, useEffect, useRef, useCallback } = React;
 
-    const APP_VERSION = '0.1.0';
+    const APP_VERSION = '0.2.0';
     const HEADERS = { 'x-calendar-client': '1' };
     const ORDER_KEY = 'dsh-calendar-task-order-v1';
     const TIMES_KEY = 'dsh-calendar-task-times-v1';
@@ -87,7 +87,13 @@ window.__ModuleLoader__.load({
 
     const parseTaskDateText = (text, baseKey) => {
       const original = String(text || '').trim();
-      let working = original;
+      let working = original
+        .replace(/明晚/g, '明天晚上')
+        .replace(/今晚/g, '今天晚上')
+        .replace(/昨晚/g, '昨天晚上')
+        .replace(/明早/g, '明天早上')
+        .replace(/今早/g, '今天早上')
+        .replace(/昨早/g, '昨天早上');
       const base = new Date((baseKey || todayKey()) + 'T00:00:00');
       let date = '';
       const makeDate = (year, month, day) => {
@@ -175,6 +181,83 @@ window.__ModuleLoader__.load({
         .trim();
       if (!title) title = original;
       return { title, date };
+    };
+
+    const TIME_PERIOD_PATTERN = '凌晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里|夜间';
+    // 从快速添加的标题里识别自然语言时间，并把它从标题中移除。
+    const parseTaskTimeText = (text) => {
+      const original = String(text || '').trim();
+      let working = original;
+      let startTime = null;
+      const periodHour = (hour, period) => {
+        if (period === '凌晨') return hour === 12 ? 0 : hour;
+        if (period === '中午') return hour < 11 ? hour + 12 : hour;
+        if (period === '下午' || period === '傍晚' || period === '晚上' || period === '夜里' || period === '夜间') {
+          if (hour === 12) return 0;
+          return hour < 12 ? hour + 12 : hour;
+        }
+        return hour;
+      };
+      const takeTime = (regex, hourIndex, minuteIndex, periodIndex, suffixIndex) => {
+        const before = working;
+        const m = working.match(regex);
+        if (!m) return false;
+        const rawHour = m[hourIndex];
+        const rawMinute = minuteIndex == null ? '' : m[minuteIndex] || '';
+        const period = periodIndex == null ? '' : m[periodIndex] || '';
+        let hour = /^[0-9]+$/.test(rawHour) ? Number(rawHour) : cnNumber(rawHour);
+        let minute = 0;
+        if (suffixIndex != null) {
+          const suffix = m[suffixIndex] || '';
+          if (suffix === '半') minute = 30;
+          else if (suffix === '一刻') minute = 15;
+          else if (suffix === '三刻') minute = 45;
+          else if (suffix === '整') minute = 0;
+          else if (suffix) {
+            const numeric = suffix.match(/[0-9]{1,2}/);
+            if (numeric) minute = Number(numeric[0]);
+          }
+        } else if (rawMinute) {
+          minute = Number(rawMinute);
+        }
+        // 「一点建议」这类不是时间，避免误删标题。
+        if (!period && rawHour === '一' && !m[suffixIndex] && !rawMinute) {
+          working = before;
+          return false;
+        }
+        if (!Number.isFinite(hour) || !Number.isFinite(minute) || minute < 0 || minute > 59) {
+          working = before;
+          return false;
+        }
+        hour = periodHour(hour, period);
+        if (hour < 0 || hour > 23) {
+          working = before;
+          return false;
+        }
+        working = (working.slice(0, m.index) + ' ' + working.slice(m.index + m[0].length)).trim();
+        startTime = hour * 60 + minute;
+        return true;
+      };
+
+      // 9:30 / 下午 3:05 / 21:00
+      const colonRe = new RegExp('(?:在\\s*)?(' + TIME_PERIOD_PATTERN + ')?\\s*([0-9]{1,2})\\s*[:：]\\s*([0-9]{1,2})');
+      let matched = takeTime(colonRe, 2, 3, 1, null);
+      // 上午9点 / 下午3点半 / 晚上8点15分 / 九点一刻
+      if (!matched) {
+        const pointRe = new RegExp(
+          '(?:在\\s*)?(' + TIME_PERIOD_PATTERN + ')?\\s*([0-9]{1,2}|[一二两三四五六七八九十]{1,3})\\s*(?:点|时)(?:\\s*(半|一刻|三刻|整|([0-9]{1,2})\\s*分?))?',
+        );
+        matched = takeTime(pointRe, 2, null, 1, 3);
+      }
+
+      let title = working
+        .replace(/[（(【\[]\s*[）)】\]]/g, ' ')
+        .replace(/^[\s,，。、;；:：\-—]+/, '')
+        .replace(/[\s,，。、;；:：\-—]+$/, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!title) title = original;
+      return { title, startTime };
     };
     const todayKey = () => dateKeyOf(new Date());
     const matrixQuadrantOf = (task, today = todayKey()) => {
@@ -325,6 +408,11 @@ window.__ModuleLoader__.load({
       { value: 'dropped', label: '已放弃' },
     ];
     const CAL_STATUS_OPTIONS = [{ value: 'dropped', label: '放弃' }];
+    const BOARD_COLUMNS = [
+      { key: 'wait', label: '未开始', color: '#8f9aa8', empty: '还没有待办任务' },
+      { key: 'doing', label: '进行中', color: '#2f7cf6', empty: '还没有进行中的任务' },
+      { key: 'done', label: '已完成', color: '#2ba471', empty: '还没有已完成任务' },
+    ];
 
     const DROPPED_STATUSES = ['dropped', 'pause', 'cancel'];
     const isDroppedStatus = (status) => DROPPED_STATUSES.includes(status);
@@ -594,6 +682,8 @@ window.__ModuleLoader__.load({
       trash: ['M3 6h18', 'M8 6V4h8v2', 'M19 6l-1 14H6L5 6', 'M10 11v6', 'M14 11v6'],
       calendar: ['M8 2v4', 'M16 2v4', 'M3 10h18', 'M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z'],
       list: ['M9 6h11', 'M9 12h11', 'M9 18h11', 'M4 6h.01', 'M4 12h.01', 'M4 18h.01'],
+      board: ['M4 5h16v14H4z', 'M9 5v14', 'M15 5v14'],
+      book: ['M4 19.5A2.5 2.5 0 0 1 6.5 17H20', 'M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z'],
       inbox: ['M22 12h-6l-2 3h-4l-2-3H2', 'M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z'],
       sun: ['M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8z', 'M12 2v2', 'M12 20v2', 'm4.93 4.93 1.41 1.41', 'm17.66 17.66 1.41 1.41', 'M2 12h2', 'M20 12h2', 'm6.34 17.66-1.41 1.41', 'm19.07 4.93-1.41 1.41'],
       'check-circle': ['M22 11.08V12a10 10 0 1 1-5.93-9.14', 'm9 11 3 3L22 4'],
@@ -955,7 +1045,7 @@ window.__ModuleLoader__.load({
           });
         } catch (error) {
           // 已放弃是合并后的新状态；旧版后端只认识 pause，先兼容一次。
-          if (statusKey === 'dropped') {
+          if (statusKey === 'dropped' && !/已完成/.test(error.message || '')) {
             return api('/calendar/api/task-status', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
@@ -967,6 +1057,35 @@ window.__ModuleLoader__.load({
       };
 
       const [activeView, setActiveView] = useState('calendar');
+      const [settingsSection, setSettingsSection] = useState('categories');
+      const settingsDetailRef = useRef(null);
+      const [obsidian, setObsidian] = useState({
+        enabled: false,
+        vault: '',
+        heading: '## todo',
+        intervalMinutes: 30,
+        lastSyncAt: '',
+        lastResult: '',
+        lastError: '',
+      });
+      const [obsidianBusy, setObsidianBusy] = useState('');
+      const [obsidianError, setObsidianError] = useState('');
+      useEffect(() => {
+        if (settingsDetailRef.current) settingsDetailRef.current.scrollTop = 0;
+      }, [settingsSection]);
+      useEffect(() => {
+        let alive = true;
+        api('/calendar/api/obsidian')
+          .then((data) => {
+            if (alive && data.obsidian) setObsidian(data.obsidian);
+          })
+          .catch((error) => {
+            if (alive) setObsidianError(error.message);
+          });
+        return () => {
+          alive = false;
+        };
+      }, []);
       useEffect(() => {
         if (!matrixDetailOpen) return undefined;
         const onKeyDown = (event) => {
@@ -982,7 +1101,7 @@ window.__ModuleLoader__.load({
         if (!dayTaskId) setMatrixDetailOpen(false);
       }, [dayTaskId]);
       useEffect(() => {
-        if (activeView !== 'matrix') setMatrixDetailOpen(false);
+        if (activeView !== 'matrix' && activeView !== 'board') setMatrixDetailOpen(false);
       }, [activeView]);
       const [summaryMode, setSummaryMode] = useState('week');
       const [summaryAnchor, setSummaryAnchor] = useState(() => todayKey());
@@ -1189,6 +1308,12 @@ window.__ModuleLoader__.load({
       const [pomoCelebrate, setPomoCelebrate] = useState(null);
       const pomoFinishRef = useRef(false);
       const [taskFilter, setTaskFilter] = useState('today');
+      const [taskCategoryId, setTaskCategoryId] = useState(null);
+      const [boardDrag, setBoardDrag] = useState(null);
+      const [boardOver, setBoardOver] = useState(null);
+      const [boardBusyId, setBoardBusyId] = useState('');
+      const boardDragRef = useRef(null);
+      const boardDragEndRef = useRef(0);
       const [collapsedGroups, setCollapsedGroups] = useState(() => {
         try {
           const raw = JSON.parse(localStorage.getItem(COLLAPSED_GROUPS_KEY) || 'null');
@@ -1337,6 +1462,13 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         loadCategories();
       }, [loadCategories]);
+
+      useEffect(() => {
+        if (!taskCategoryId || taskCategoryId === 'none') return;
+        if (!categories.some((category) => String(category.id) === String(taskCategoryId))) {
+          setTaskCategoryId(null);
+        }
+      }, [categories, taskCategoryId]);
 
       const patchCategoryLocal = (id, patch) => {
         setCategories((prev) =>
@@ -1955,6 +2087,10 @@ window.__ModuleLoader__.load({
 
       const completeTask = async (task) => {
         if (!task || completingTasks.includes(task.id)) return;
+        if (isDroppedStatus(task.status)) {
+          showNotice('已放弃的任务不能标记完成');
+          return;
+        }
         const nextStatus = task.done ? 'wait' : 'done';
         setCompletingTasks((prev) => prev.concat([task.id]));
         try {
@@ -1990,7 +2126,7 @@ window.__ModuleLoader__.load({
         event.preventDefault();
         event.stopPropagation();
         const width = 220;
-        const estimated = 240 + CAL_STATUS_OPTIONS.length * 34;
+        const estimated = 260 + CAL_STATUS_OPTIONS.length * 34;
         const viewportW = window.innerWidth || 1200;
         const viewportH = window.innerHeight || 800;
         setCalendarStatusMenu({
@@ -2006,6 +2142,14 @@ window.__ModuleLoader__.load({
       const applyCalendarStatus = async (option) => {
         const menu = calendarStatusMenu;
         if (!menu || menu.busy) return;
+        if (isDroppedStatus(option.value) && menu.task.done) {
+          setCalendarStatusMenu(Object.assign({}, menu, { error: '已完成的任务不能放弃' }));
+          return;
+        }
+        if (isDroppedStatus(menu.task.status) && !isDroppedStatus(option.value)) {
+          setCalendarStatusMenu(Object.assign({}, menu, { error: '已放弃的任务不能改回待完成' }));
+          return;
+        }
         setCalendarStatusMenu(Object.assign({}, menu, { busy: true, error: '' }));
         try {
           const res = await postTaskStatus(menu.task.id, option.value);
@@ -2171,6 +2315,55 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const updateObsidian = (patch) => setObsidian((prev) => Object.assign({}, prev, patch));
+
+      const saveObsidian = async (sync) => {
+        if (obsidianBusy) return;
+        setObsidianBusy('save');
+        setObsidianError('');
+        try {
+          const data = await api('/calendar/api/obsidian', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({
+              enabled: Boolean(obsidian.enabled),
+              vault: obsidian.vault,
+              heading: obsidian.heading,
+              intervalMinutes: obsidian.intervalMinutes,
+              sync: Boolean(sync),
+            }),
+          });
+          if (data.obsidian) setObsidian(data.obsidian);
+          if (data.writeError) {
+            setObsidianError(data.writeError);
+            showNotice('已保存设置，但写入失败：' + data.writeError);
+          } else {
+            showNotice(sync ? '已保存并写入 Obsidian' : 'Obsidian 设置已保存', 'success');
+          }
+        } catch (error) {
+          setObsidianError(error.message);
+          showNotice(error.message);
+        } finally {
+          setObsidianBusy('');
+        }
+      };
+
+      const syncObsidianNow = async () => {
+        if (obsidianBusy) return;
+        setObsidianBusy('sync');
+        setObsidianError('');
+        try {
+          const data = await api('/calendar/api/obsidian-sync', { method: 'POST' });
+          if (data.obsidian) setObsidian(data.obsidian);
+          showNotice('已写入 Obsidian', 'success');
+        } catch (error) {
+          setObsidianError(error.message);
+          showNotice(error.message);
+        } finally {
+          setObsidianBusy('');
+        }
+      };
+
       const addSubtask = async () => {
         const title = subtaskDraft.trim();
         if (!title || subtaskBusy || !dayDetail || !dayDetail.task) return;
@@ -2244,6 +2437,14 @@ window.__ModuleLoader__.load({
         if (!dayDetail || !dayDetail.task || dayDetail.busy) return;
         const option = STATUS_OPTIONS.find((item) => item.value === statusKey);
         if (!option) return;
+        if (isDroppedStatus(dayDetail.task.status) && !isDroppedStatus(statusKey)) {
+          setDayDetail((prev) => (prev ? Object.assign({}, prev, { error: '已放弃的任务不能改回待完成' }) : prev));
+          return;
+        }
+        if (isDroppedStatus(statusKey) && dayDetail.task.done) {
+          setDayDetail((prev) => (prev ? Object.assign({}, prev, { error: '已完成的任务不能放弃' }) : prev));
+          return;
+        }
         setDayDetail((prev) => (prev ? Object.assign({}, prev, { busy: 'status', error: '', message: '' }) : prev));
         try {
           const res = await postTaskStatus(dayDetail.task.id, statusKey);
@@ -2307,9 +2508,13 @@ window.__ModuleLoader__.load({
           quadrantLabel: preset.quadrantLabel || '',
           categoryId: preset.categoryId
             ? String(preset.categoryId)
-            : categories && categories[0]
-              ? String(categories[0].id)
-              : '',
+            : taskCategoryId === 'none'
+              ? ''
+              : (taskCategoryId && categories.find((category) => String(category.id) === String(taskCategoryId))
+                    ? String(taskCategoryId)
+                    : categories && categories[0]
+                      ? String(categories[0].id)
+                      : ''),
           batchText: '',
           batchRows: [],
           error: '',
@@ -2408,7 +2613,8 @@ window.__ModuleLoader__.load({
         const width = 220;
         const viewportW = window.innerWidth || 1200;
         const viewportH = window.innerHeight || 800;
-        const estimated = 240 + CAL_STATUS_OPTIONS.length * 34;
+        const doneTask = !!calendarStatusMenu.task.done;
+        const estimated = doneTask ? 190 : 260 + CAL_STATUS_OPTIONS.length * 34;
         const left = clamp(calendarStatusMenu.x, 8, Math.max(8, viewportW - width - 8));
         const top = clamp(calendarStatusMenu.y, 8, Math.max(8, viewportH - estimated - 8));
         const pomoBlock = pomodoroBlock(calendarStatusMenu.task);
@@ -2421,7 +2627,7 @@ window.__ModuleLoader__.load({
               className: 'lc-popup lc-cal-status-pop',
               style: { left: left + 'px', top: top + 'px', width: width + 'px' },
               role: 'menu',
-              'aria-label': '修改任务状态',
+              'aria-label': doneTask ? '任务操作' : '修改任务状态',
               onClick: (event) => event.stopPropagation(),
             },
             h('div', { className: 'lc-popup-head' }, '任务操作'),
@@ -2438,16 +2644,17 @@ window.__ModuleLoader__.load({
               h('span', { className: 'lc-pomo-start-icon' }, '🍅'),
               h('span', { className: 'lc-pomo-start-label' }, pomoBlock ? pomoBlock.label : '开始番茄钟'),
             ),
-            h('div', { className: 'lc-popup-sep' }),
-            h('div', { className: 'lc-popup-head' }, '修改任务状态'),
+            h('div', { className: 'lc-popup-sep', style: doneTask ? { display: 'none' } : undefined }),
+            h('div', { className: 'lc-popup-head', style: doneTask ? { display: 'none' } : undefined }, '修改任务状态'),
             calendarStatusMenu.error ? h('div', { className: 'lc-cal-status-error' }, calendarStatusMenu.error) : null,
             h(
               'div',
-              { className: 'lc-popup-list' },
+              { className: 'lc-popup-list', style: doneTask ? { display: 'none' } : undefined },
               CAL_STATUS_OPTIONS.map((option) => {
                 const active =
                   String(option.value) === String(calendarStatusMenu.current) ||
                   (option.value === 'dropped' && isDroppedStatus(calendarStatusMenu.current));
+                const blocked = !!calendarStatusMenu.task.done && isDroppedStatus(option.value);
                 return h(
                   'button',
                   {
@@ -2455,8 +2662,12 @@ window.__ModuleLoader__.load({
                     type: 'button',
                     role: 'menuitemradio',
                     'aria-checked': active ? 'true' : 'false',
-                    className: 'lc-popup-item' + (active ? ' lc-popup-item-active' : ''),
-                    disabled: !!calendarStatusMenu.busy || active,
+                    className:
+                      'lc-popup-item' +
+                      (active ? ' lc-popup-item-active' : '') +
+                      (blocked ? ' lc-popup-item-disabled' : ''),
+                    disabled: !!calendarStatusMenu.busy || active || blocked,
+                    title: blocked ? '已完成的任务不能放弃' : '',
                     onClick: () => applyCalendarStatus(option),
                   },
                   option.label,
@@ -2901,7 +3112,19 @@ window.__ModuleLoader__.load({
                   'aria-label': '修改任务状态',
                   onChange: (event) => updateDayStatus(event.target.value),
                 },
-                STATUS_OPTIONS.map((option) => h('option', { key: option.value, value: option.value }, option.label)),
+                STATUS_OPTIONS.map((option) =>
+                  h(
+                    'option',
+                    {
+                      key: option.value,
+                      value: option.value,
+                      disabled:
+                        (isDroppedStatus(option.value) && Boolean(dayDetail.task.done)) ||
+                        (isDroppedStatus(dayDetail.task.status) && !isDroppedStatus(option.value)),
+                    },
+                    option.label + (isDroppedStatus(option.value) && dayDetail.task.done ? '（已完成不可）' : ''),
+                  ),
+                ),
               ),
             ),
             h(
@@ -3250,7 +3473,7 @@ window.__ModuleLoader__.load({
                     calDragTarget &&
                     calDragTarget.date === key &&
                     calDragTarget.taskId === String(task.id);
-                  const isInactive = !task.done && isDroppedStatus(task.status);
+                  const isInactive = isDroppedStatus(task.status);
                   const chipClass =
                     'lc-cal-task' +
                     (isWeek ? ' lc-cal-task-week' : ' lc-cal-task-month') +
@@ -3564,7 +3787,7 @@ window.__ModuleLoader__.load({
           const preview = dayResize && String(dayResize.id) === String(task.id) ? dayResize : block;
           const top = (preview.start - dayStart) * pxPerMin;
           const height = Math.max(22, (preview.end - preview.start) * pxPerMin);
-          const isInactive = !task.done && isDroppedStatus(task.status);
+          const isInactive = isDroppedStatus(task.status);
           const laneCount = block.laneCount || 1;
           const lane = block.lane || 0;
           const left = lane * (100 / laneCount) + 1;
@@ -3676,8 +3899,14 @@ window.__ModuleLoader__.load({
           const taskBlocks = dayTasks.map((task) => {
             const customStart = Number(calendarDayTimes[String(task.id)]);
             const hasCustomStart = Number.isFinite(customStart) && customStart > 0;
+            const storedStart = Number(task.startTime);
+            const hasStoredStart =
+              task.startTime !== null &&
+              task.startTime !== undefined &&
+              Number.isFinite(storedStart) &&
+              storedStart >= 0;
             const duration = Math.max(DAY_SNAP_MIN, Math.round(((Number(task.estimate) || 1) * 60) / DAY_SNAP_MIN) * DAY_SNAP_MIN);
-            const proposedStart = hasCustomStart ? customStart : Math.max(cursor, dayStart);
+            const proposedStart = hasCustomStart ? customStart : hasStoredStart ? Math.max(storedStart, dayStart) : Math.max(cursor, dayStart);
             const proposedEnd = proposedStart + duration;
             const start = Math.max(dayStart, proposedStart);
             const end = Math.min(dayEnd, proposedEnd);
@@ -4428,8 +4657,25 @@ window.__ModuleLoader__.load({
               (filter === 'done' || (!task.done && !isDroppedStatus(task.status))),
           ).length;
         const currentFilter = TASK_FILTERS.find((item) => item.key === taskFilter) || TASK_FILTERS[0];
-        const visible = allTasks
-          .filter((task) => matches(task, currentFilter.key))
+        const selectedCategory =
+          taskCategoryId && taskCategoryId !== 'none'
+            ? categories.find((category) => String(category.id) === String(taskCategoryId)) || null
+            : null;
+        const categoryLabel = taskCategoryId === 'none' ? '未分类' : selectedCategory ? selectedCategory.name : '';
+        const categoryMatches = (task) => {
+          if (!taskCategoryId) return true;
+          if (taskCategoryId === 'none') return !task.categoryId;
+          return String(task.categoryId || '') === String(taskCategoryId);
+        };
+        const baseVisible = allTasks.filter((task) => matches(task, currentFilter.key));
+        const categoryCount = (key) =>
+          baseVisible.filter((task) => {
+            if (key === 'none') return !task.categoryId;
+            return String(task.categoryId || '') === String(key);
+          }).length;
+        const hasUncategorized = allTasks.some((task) => !task.categoryId);
+        const visible = baseVisible
+          .filter(categoryMatches)
           .sort((a, b) => {
             const byDate = String(a.deadline || '9999-12-31').localeCompare(String(b.deadline || '9999-12-31'));
             if (byDate) return byDate;
@@ -4470,26 +4716,48 @@ window.__ModuleLoader__.load({
           const rawTitle = quickTitle.trim();
           if (!rawTitle || quickSaving) return;
           const parsed = parseTaskDateText(rawTitle, today);
-          const title = parsed.title;
+          const timeParsed = parseTaskTimeText(parsed.title);
+          const title = timeParsed.title;
+          const startTime = timeParsed.startTime;
           const deadline = parsed.date || (currentFilter.key === 'tomorrow' ? tomorrow : today);
           setQuickSaving(true);
           try {
+            const quickCategory =
+              taskCategoryId === 'none'
+                ? null
+                : selectedCategory
+                  ? selectedCategory.id
+                  : categories && categories[0]
+                    ? categories[0].id
+                    : null;
+            const payload = {
+              title,
+              priority: 3,
+              deadline,
+              categoryId: quickCategory,
+            };
+            if (startTime != null) {
+              payload.startTime = startTime;
+              payload.estimate = 0.5;
+            }
             const res = await api('/calendar/api/task-create', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
-              body: JSON.stringify({
-                title,
-                priority: 3,
-                deadline,
-                categoryId: categories && categories[0] ? categories[0].id : null,
-              }),
+              body: JSON.stringify(payload),
             });
             setQuickTitle('');
             expandTaskGroups([deadline]);
+            if (startTime != null && res.task) {
+              setCalendarDayTimes((prev) => Object.assign({}, prev, { [String(res.task.id)]: Number(startTime) }));
+            }
             await loadMyTasks();
             loadCategories();
             if (res.task) loadDayTaskDetail(res.task.id, res.task);
-            if (parsed.date) showNotice('已创建到 ' + shortDate(deadline), 'success');
+            if (parsed.date) {
+              showNotice('已创建到 ' + shortDate(deadline) + (startTime != null ? ' ' + clockText(startTime) : ''), 'success');
+            } else if (startTime != null) {
+              showNotice('已创建 ' + clockText(startTime), 'success');
+            }
           } catch (error) {
             showNotice(error.message);
           } finally {
@@ -4584,7 +4852,12 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'lc-task-row-meta' },
               h('span', { className: 'lc-task-pri lc-task-pri-' + (task.priority || 3) }, 'P' + (task.priority || 3)),
-              h('span', { className: 'lc-task-row-date' }, shortDate(task.deadline)),
+              h(
+                'span',
+                { className: 'lc-task-row-date' },
+                shortDate(task.deadline) +
+                  (task.startTime !== null && task.startTime !== undefined ? ' ' + clockText(task.startTime) : ''),
+              ),
             ),
           );
         return h(
@@ -4597,7 +4870,7 @@ window.__ModuleLoader__.load({
               'div',
               { className: 'lc-task-top-main' },
               h('div', { className: 'lc-task-top-title' }, '任务'),
-              h('div', { className: 'lc-task-top-sub' }, currentFilter.label + ' · 按日期整理'),
+              h('div', { className: 'lc-task-top-sub' }, currentFilter.label + (categoryLabel ? ' · ' + categoryLabel : ' · 按日期整理')),
             ),
             h(
               'div',
@@ -4635,6 +4908,58 @@ window.__ModuleLoader__.load({
                 ),
               ),
             ),
+            h('div', { className: 'lc-task-side-title lc-task-side-title-cats' }, '分类'),
+            h(
+              'nav',
+              { className: 'lc-task-side-nav lc-task-cat-nav' },
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'lc-task-side-item' + (!taskCategoryId ? ' lc-task-side-item-active' : ''),
+                  onClick: () => setTaskCategoryId(null),
+                },
+                h('span', { className: 'lc-task-cat-dot lc-task-cat-dot-all' }),
+                h('span', { className: 'lc-task-side-label' }, '全部'),
+                h('span', { className: 'lc-task-side-count' }, String(baseVisible.length)),
+              ),
+              categories.map((category) =>
+                h(
+                  'button',
+                  {
+                    key: category.id,
+                    type: 'button',
+                    className:
+                      'lc-task-side-item' +
+                      (String(taskCategoryId) === String(category.id) ? ' lc-task-side-item-active' : ''),
+                    onClick: () =>
+                      setTaskCategoryId((prev) =>
+                        String(prev) === String(category.id) ? null : String(category.id),
+                      ),
+                  },
+                  h('span', {
+                    className: 'lc-task-cat-dot',
+                    style: { background: category.color },
+                  }),
+                  h('span', { className: 'lc-task-side-label' }, category.name),
+                  h('span', { className: 'lc-task-side-count' }, String(categoryCount(category.id))),
+                ),
+              ),
+              hasUncategorized
+                ? h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'lc-task-side-item' + (taskCategoryId === 'none' ? ' lc-task-side-item-active' : ''),
+                      onClick: () =>
+                        setTaskCategoryId((prev) => (prev === 'none' ? null : 'none')),
+                    },
+                    h('span', { className: 'lc-task-cat-dot lc-task-cat-dot-none' }),
+                    h('span', { className: 'lc-task-side-label' }, '未分类'),
+                    h('span', { className: 'lc-task-side-count' }, String(categoryCount('none'))),
+                  )
+                : null,
+            ),
           ),
           h(
             'div',
@@ -4667,7 +4992,7 @@ window.__ModuleLoader__.load({
                   h('input', {
                     type: 'text',
                     value: quickTitle,
-                    placeholder: '添加任务，可带日期，如「明天给花浇水」',
+                    placeholder: '添加任务，可带日期时间，如「明天上午9点开会」',
                     disabled: quickSaving,
                     onChange: (event) => setQuickTitle(event.target.value),
                     onKeyDown: submitQuickTask,
@@ -4710,7 +5035,7 @@ window.__ModuleLoader__.load({
                     collapsed ? null : ordered.map((task) => renderRow(task, group.dateKey, ordered)),
                   );
                 })
-              : h('div', { className: 'lc-task-empty' }, myTasks.loading ? '加载中…' : currentFilter.key === 'done' ? '还没有已完成的任务' : '这个列表是空的，在上方输入任务标题并回车即可添加'),
+              : h('div', { className: 'lc-task-empty' }, myTasks.loading ? '加载中…' : currentFilter.key === 'done' ? '还没有已完成的任务' : categoryLabel ? '这个分类下没有任务' : '这个列表是空的，在上方输入任务标题并回车即可添加'),
           ),
           h(
             'div',
@@ -6037,7 +6362,7 @@ window.__ModuleLoader__.load({
                             'div',
                             { className: 'lc-update-version' },
                             h('span', null, '当前版本'),
-                            h('strong', null, 'v' + (data.current || '0.1.0')),
+                            h('strong', null, 'v' + (data.current || APP_VERSION)),
                           ),
                           h('span', { className: 'lc-update-arrow' }, '→'),
                           h(
@@ -6221,6 +6546,308 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const boardStatusKey = (task) => {
+        if (!task) return 'wait';
+        if (task.done || task.status === 'done') return 'done';
+        if (task.status === 'doing') return 'doing';
+        return 'wait';
+      };
+
+      const boardAllTasks = () => (myTasks.tasks || []).filter((task) => !isDroppedStatus(task.status));
+
+      const sortBoardTasks = (list) =>
+        list.slice().sort((a, b) => {
+          const pa = Number(a.priority) || 3;
+          const pb = Number(b.priority) || 3;
+          if (pa !== pb) return pa - pb;
+          const da = String(a.deadline || '9999-99-99');
+          const db = String(b.deadline || '9999-99-99');
+          if (da !== db) return da < db ? -1 : 1;
+          const sa = a.startTime === null || a.startTime === undefined ? 9999 : Number(a.startTime);
+          const sb = b.startTime === null || b.startTime === undefined ? 9999 : Number(b.startTime);
+          if (sa !== sb) return sa - sb;
+          return Number(a.id) - Number(b.id);
+        });
+
+      const moveBoardTask = async (task, statusKey) => {
+        if (!task || boardBusyId || isDroppedStatus(task.status)) return;
+        if (boardStatusKey(task) === statusKey) return;
+        const target = STATUS_OPTIONS.find((item) => item.value === statusKey);
+        if (!target) return;
+        const id = String(task.id);
+        setBoardBusyId(id);
+        setMyTasks((prev) =>
+          Object.assign({}, prev, {
+            tasks: (prev.tasks || []).map((item) =>
+              String(item.id) === id
+                ? Object.assign({}, item, {
+                    status: statusKey,
+                    statusText: target.label,
+                    done: statusKey === 'done',
+                  })
+                : item,
+            ),
+          }),
+        );
+        try {
+          const res = await postTaskStatus(task.id, statusKey);
+          if (res && res.task) {
+            setMyTasks((prev) =>
+              Object.assign({}, prev, {
+                tasks: (prev.tasks || []).map((item) => (String(item.id) === id ? res.task : item)),
+              }),
+            );
+          }
+          if (dayTaskId && String(dayTaskId) === id) refreshDayTaskDetail(task.id);
+          showNotice('已移到「' + target.label + '」', 'success');
+        } catch (error) {
+          showNotice('移动任务失败：' + error.message);
+          await loadMyTasks();
+        } finally {
+          setBoardBusyId('');
+        }
+      };
+
+      const beginBoardDrag = (event, task) => {
+        if (boardBusyId || isDroppedStatus(task.status)) {
+          event.preventDefault();
+          return;
+        }
+        const info = { id: String(task.id), from: boardStatusKey(task) };
+        boardDragRef.current = info;
+        setBoardDrag(info);
+        setBoardOver(null);
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', String(task.id));
+        }
+      };
+
+      const overBoardColumn = (event, statusKey) => {
+        const drag = boardDragRef.current;
+        if (!drag || drag.from === statusKey) return;
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        setBoardOver((prev) => (prev === statusKey ? prev : statusKey));
+      };
+
+      const leaveBoardColumn = (event, statusKey) => {
+        if (event.currentTarget.contains(event.relatedTarget)) return;
+        setBoardOver((prev) => (prev === statusKey ? null : prev));
+      };
+
+      const dropBoardColumn = (event, statusKey) => {
+        event.preventDefault();
+        const drag = boardDragRef.current;
+        if (drag) boardDragEndRef.current = Date.now();
+        boardDragRef.current = null;
+        setBoardDrag(null);
+        setBoardOver(null);
+        if (!drag || drag.from === statusKey) return;
+        const task = (myTasks.tasks || []).find((item) => String(item.id) === drag.id);
+        if (task) moveBoardTask(task, statusKey);
+      };
+
+      const endBoardDrag = () => {
+        if (boardDragRef.current) boardDragEndRef.current = Date.now();
+        boardDragRef.current = null;
+        setBoardDrag(null);
+        setBoardOver(null);
+      };
+
+      const openBoardTask = (task) => {
+        if (Date.now() - boardDragEndRef.current < 350) return;
+        setMatrixDetailOpen(true);
+        loadDayTaskDetail(task.id, task);
+      };
+
+      const boardDateText = (deadline) => {
+        if (!deadline) return '未设置';
+        const today = todayKey();
+        if (deadline === today) return '今天';
+        const tomorrowDate = new Date(today + 'T00:00:00');
+        tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+        if (deadline === dateKeyOf(tomorrowDate)) return '明天';
+        const date = new Date(deadline + 'T00:00:00');
+        if (Number.isNaN(date.getTime())) return deadline;
+        if (date.getFullYear() !== new Date().getFullYear()) {
+          return date.getFullYear() + '-' + String(date.getMonth() + 1).padStart(2, '0') + '-' + String(date.getDate()).padStart(2, '0');
+        }
+        return date.getMonth() + 1 + '月' + date.getDate() + '日';
+      };
+
+      const renderBoardCard = (task) => {
+        const today = todayKey();
+        const statusKey = boardStatusKey(task);
+        const doneCard = statusKey === 'done';
+        const overdue = !doneCard && task.deadline && task.deadline < today;
+        const busy = String(boardBusyId) === String(task.id);
+        return h(
+          'div',
+          {
+            key: task.id,
+            className:
+              'lc-board-card' +
+              (doneCard ? ' is-done' : '') +
+              (busy ? ' is-busy' : '') +
+              (boardDrag && boardDrag.id === String(task.id) ? ' is-dragging' : ''),
+            role: 'button',
+            tabIndex: 0,
+            draggable: !busy,
+            'data-task-id': String(task.id),
+            title: task.title,
+            onClick: () => openBoardTask(task),
+            onKeyDown: (event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return;
+              event.preventDefault();
+              openBoardTask(task);
+            },
+            onDragStart: (event) => beginBoardDrag(event, task),
+            onDragEnd: endBoardDrag,
+          },
+          h(
+            'div',
+            { className: 'lc-board-card-top' },
+            h('input', {
+              type: 'checkbox',
+              className: 'lc-task-check lc-board-check',
+              checked: Boolean(task.done),
+              disabled: busy || completingTasks.includes(task.id),
+              title: task.done ? '取消完成，回到未开始' : '标记完成',
+              'aria-label': (task.done ? '取消完成：' : '标记完成：') + task.title,
+              onClick: (event) => event.stopPropagation(),
+              onChange: () => completeTask(task),
+            }),
+            h('div', { className: 'lc-board-card-title' + (doneCard ? ' is-done' : '') }, task.title),
+          ),
+          h(
+            'div',
+            { className: 'lc-board-card-meta' },
+            h('span', { className: 'lc-task-pri lc-task-pri-' + (task.priority || 3) }, 'P' + (task.priority || 3)),
+            task.categoryId
+              ? h(
+                  'span',
+                  { className: 'lc-board-cat', title: task.categoryName || '分类' },
+                  h('span', {
+                    className: 'lc-board-cat-dot',
+                    style: { background: taskCategoryColor(task) },
+                  }),
+                  h('span', null, task.categoryName || '未分类'),
+                )
+              : null,
+            h(
+              'span',
+              { className: 'lc-board-date' + (overdue ? ' is-overdue' : '') },
+              boardDateText(task.deadline) +
+                (task.startTime !== null && task.startTime !== undefined ? ' ' + clockText(task.startTime) : ''),
+            ),
+            h(TomatoMarks, { count: task.pomodoroCount, max: 3, className: 'lc-board-tomatoes' }),
+          ),
+        );
+      };
+
+      const renderBoardPage = () => {
+        const grouped = { wait: [], doing: [], done: [] };
+        for (const task of boardAllTasks()) grouped[boardStatusKey(task)].push(task);
+        for (const key of Object.keys(grouped)) grouped[key] = sortBoardTasks(grouped[key]);
+        const openCount = grouped.wait.length + grouped.doing.length;
+        return h(
+          'div',
+          { className: 'lc-board' },
+          h(
+            'header',
+            { className: 'lc-board-head' },
+            h(
+              'div',
+              { className: 'lc-board-head-main' },
+              h('div', { className: 'lc-board-title' }, '看板'),
+              h(
+                'div',
+                { className: 'lc-board-sub' },
+                '按状态分列 · 拖动卡片改变状态 · 已放弃任务不显示',
+              ),
+            ),
+            h(
+              'div',
+              { className: 'lc-board-actions' },
+              h('span', { className: 'lc-board-stat' }, h('b', null, String(openCount)), ' 未完成'),
+              h('span', { className: 'lc-board-stat' }, h('b', null, String(grouped.doing.length)), ' 进行中'),
+              h('span', { className: 'lc-board-stat' }, h('b', null, String(grouped.done.length)), ' 已完成'),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'lc-icon-btn lc-board-refresh' + (myTasks.loading ? ' lc-spinning' : ''),
+                  title: '刷新看板',
+                  'aria-label': '刷新看板',
+                  disabled: myTasks.loading,
+                  onClick: () => loadMyTasks(true),
+                },
+                h(GlyphIcon, { name: 'refresh', size: 16 }),
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'lc-board-new',
+                  onClick: () => openTaskModal(todayKey()),
+                },
+                h(GlyphIcon, { name: 'plus', size: 14 }),
+                h('span', null, '新建任务'),
+              ),
+            ),
+          ),
+          h(
+            'div',
+            { className: 'lc-board-body' },
+            myTasks.error
+              ? h(
+                  'div',
+                  { className: 'lc-board-error' },
+                  h('span', null, '加载失败：' + myTasks.error),
+                  h(
+                    'button',
+                    { type: 'button', className: 'lc-btn', onClick: () => loadMyTasks(true) },
+                    '重试',
+                  ),
+                )
+              : null,
+            h(
+              'div',
+              { className: 'lc-board-cols' },
+              BOARD_COLUMNS.map((column) =>
+                h(
+                  'section',
+                  {
+                    key: column.key,
+                    className: 'lc-board-col' + (boardOver === column.key ? ' is-over' : ''),
+                    'data-board-status': column.key,
+                    style: { '--lc-board-accent': column.color },
+                    onDragOver: (event) => overBoardColumn(event, column.key),
+                    onDragLeave: (event) => leaveBoardColumn(event, column.key),
+                    onDrop: (event) => dropBoardColumn(event, column.key),
+                  },
+                  h(
+                    'div',
+                    { className: 'lc-board-col-head' },
+                    h('span', { className: 'lc-board-col-dot' }),
+                    h('span', { className: 'lc-board-col-name' }, column.label),
+                    h('span', { className: 'lc-board-col-count' }, String(grouped[column.key].length)),
+                  ),
+                  h(
+                    'div',
+                    { className: 'lc-board-list' },
+                    grouped[column.key].length
+                      ? grouped[column.key].map(renderBoardCard)
+                      : h('div', { className: 'lc-board-empty' }, column.empty),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      };
+
       const renderMatrixPage = () => {
         const today = todayKey();
         const tomorrowDate = new Date(today + 'T00:00:00');
@@ -6287,16 +6914,27 @@ window.__ModuleLoader__.load({
                 loadDayTaskDetail(task.id, task);
               },
             },
-            h('input', {
-              type: 'checkbox',
-              className: 'lc-task-check',
-              checked: Boolean(task.done),
-              disabled: completingTasks.includes(task.id),
-              title: '标记完成',
-              'aria-label': '标记完成：' + task.title,
-              onClick: (event) => event.stopPropagation(),
-              onChange: () => completeTask(task),
-            }),
+            isDroppedStatus(task.status)
+              ? h(
+                  'span',
+                  {
+                    className: 'lc-task-check lc-task-check-dropped',
+                    title: '已放弃',
+                    'aria-label': '已放弃：' + task.title,
+                    onClick: (event) => event.stopPropagation(),
+                  },
+                  h(DroppedCross),
+                )
+              : h('input', {
+                  type: 'checkbox',
+                  className: 'lc-task-check',
+                  checked: Boolean(task.done),
+                  disabled: completingTasks.includes(task.id),
+                  title: '标记完成',
+                  'aria-label': '标记完成：' + task.title,
+                  onClick: (event) => event.stopPropagation(),
+                  onChange: () => completeTask(task),
+                }),
             h(
               'div',
               { className: 'lc-matrix-task-main' },
@@ -6430,6 +7068,19 @@ window.__ModuleLoader__.load({
         const syncTime = localEvents.syncedAt
           ? new Date(localEvents.syncedAt).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
           : '';
+        const obsidianLastSync = obsidian.lastSyncAt
+          ? new Date(obsidian.lastSyncAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+          : '';
+        const obsidianErrorText = obsidianError || obsidian.lastError;
+        const obsidianVault = (obsidian.vault || '').trim().replace(/\/+$/, '');
+        const obsidianFile = obsidianVault ? obsidianVault + '/' + todayKey() + '.md' : '';
+        const settingsSections = [
+          { key: 'categories', label: '任务分类', icon: 'inbox' },
+          { key: 'day-range', label: '日视图', icon: 'calendar' },
+          { key: 'local-calendar', label: '本机日历', icon: 'refresh' },
+          { key: 'obsidian', label: 'Obsidian', icon: 'book' },
+          { key: 'data', label: '数据位置', icon: 'settings' },
+        ];
         return h(
           'div',
           { className: 'lc-settings' },
@@ -6437,14 +7088,35 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'lc-settings-head' },
             h('h1', { className: 'lc-settings-title' }, '设置'),
-            h('p', { className: 'lc-settings-sub' }, '日视图与本机日历'),
+            h('p', { className: 'lc-settings-sub' }, '分类、日视图、本机日历与 Obsidian'),
           ),
           h(
             'div',
             { className: 'lc-settings-body' },
             h(
+              'aside',
+              { className: 'lc-settings-nav', 'aria-label': '设置分区' },
+              settingsSections.map((section) =>
+                h(
+                  'button',
+                  {
+                    key: section.key,
+                    type: 'button',
+                    className: 'lc-settings-nav-btn' + (settingsSection === section.key ? ' is-active' : ''),
+                    'aria-current': settingsSection === section.key ? 'page' : undefined,
+                    onClick: () => setSettingsSection(section.key),
+                  },
+                  h(GlyphIcon, { name: section.icon, size: 17 }),
+                  h('span', null, section.label),
+                ),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'lc-settings-detail', 'data-active-settings': settingsSection, ref: settingsDetailRef },
+            h(
               'section',
-              { className: 'lc-settings-card lc-cat-card' },
+              { className: 'lc-settings-card lc-cat-card', 'data-settings-section': 'categories' },
               h(
                 'div',
                 { className: 'lc-settings-card-head' },
@@ -6704,6 +7376,173 @@ window.__ModuleLoader__.load({
                 '农历日期、二十四节气与传统节日按香港天文台《公历与农历对照表》标注；2025–2027 已逐日核对。节日优先于节气，小年分北方腊月二十三、南方腊月二十四。',
               ),
             ),
+            h(
+              'section',
+              { className: 'lc-settings-card' },
+              h(
+                'div',
+                { className: 'lc-settings-card-head' },
+                h('h2', { className: 'lc-settings-card-title' }, 'Obsidian 日志'),
+                h('span', { className: 'lc-settings-badge' }, '本地'),
+              ),
+              h(
+                'p',
+                { className: 'lc-settings-note' },
+                '把今天的任务和总结写进 Obsidian 当天的日记。只更新指定的标题段落，其他内容不动。',
+              ),
+              h(
+                'div',
+                { className: 'lc-obsidian-enable' },
+                h(
+                  'div',
+                  null,
+                  h('strong', null, '自动写入'),
+                  h('span', null, '保存后按设定的间隔写入当天日志'),
+                ),
+                h(
+                  'button',
+                  {
+                    type: 'button',
+                    className: 'lc-switch' + (obsidian.enabled ? ' lc-switch-on' : ''),
+                    role: 'switch',
+                    'aria-checked': Boolean(obsidian.enabled),
+                    'aria-label': '开启 Obsidian 自动写入',
+                    onClick: () => updateObsidian({ enabled: !obsidian.enabled }),
+                  },
+                  h('span', { className: 'lc-switch-handle' }),
+                ),
+              ),
+              h(
+                'div',
+                { className: 'lc-obsidian-form' },
+                h(
+                  'label',
+                  { className: 'lc-obsidian-field' },
+                  h('span', { className: 'lc-obsidian-label' }, 'Obsidian 仓库目录'),
+                  h('input', {
+                    type: 'text',
+                    className: 'lc-obsidian-input',
+                    value: obsidian.vault,
+                    placeholder: '例如 /Users/你/Documents/ObsidianVault',
+                    spellCheck: false,
+                    onChange: (event) => updateObsidian({ vault: event.target.value }),
+                  }),
+                  h(
+                    'span',
+                    { className: 'lc-obsidian-path' },
+                    obsidianFile ? '将写入：' + obsidianFile : '填写仓库目录后显示目标文件路径',
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'lc-obsidian-grid' },
+                  h(
+                    'label',
+                    { className: 'lc-obsidian-field' },
+                    h('span', { className: 'lc-obsidian-label' }, '写入到哪个标题'),
+                    h('input', {
+                      type: 'text',
+                      className: 'lc-obsidian-input',
+                      value: obsidian.heading,
+                      placeholder: '## todo',
+                      spellCheck: false,
+                      onChange: (event) => updateObsidian({ heading: event.target.value }),
+                    }),
+                  ),
+                  h(
+                    'label',
+                    { className: 'lc-obsidian-field lc-obsidian-interval' },
+                    h('span', { className: 'lc-obsidian-label' }, '自动写入间隔'),
+                    h(
+                      'span',
+                      { className: 'lc-obsidian-interval-wrap' },
+                      h('input', {
+                        type: 'number',
+                        className: 'lc-obsidian-input',
+                        min: 1,
+                        max: 1440,
+                        step: 1,
+                        value: obsidian.intervalMinutes,
+                        onChange: (event) =>
+                          updateObsidian({ intervalMinutes: event.target.value === '' ? '' : Number(event.target.value) }),
+                      }),
+                      h('span', null, '分钟'),
+                    ),
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'lc-obsidian-actions' },
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'lc-btn lc-btn-primary',
+                      disabled: Boolean(obsidianBusy),
+                      onClick: () => void saveObsidian(true),
+                    },
+                    obsidianBusy === 'save' ? '保存中…' : '保存并立即写入',
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'lc-btn lc-btn-ghost',
+                      disabled: Boolean(obsidianBusy),
+                      onClick: () => void saveObsidian(false),
+                    },
+                    '仅保存',
+                  ),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'lc-btn lc-btn-ghost',
+                      disabled: Boolean(obsidianBusy),
+                      onClick: () => void syncObsidianNow(),
+                    },
+                    obsidianBusy === 'sync' ? '写入中…' : '立即写入',
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'lc-obsidian-status' + (obsidianErrorText ? ' is-error' : obsidian.lastSyncAt ? ' is-ok' : '') },
+                  h('strong', null, obsidianErrorText ? '写入失败' : obsidian.lastSyncAt ? '上次写入成功' : '尚未写入'),
+                  h(
+                    'span',
+                    null,
+                    obsidianErrorText ||
+                      (obsidian.lastSyncAt
+                        ? obsidianLastSync + (obsidian.lastResult ? ' · ' + obsidian.lastResult : '')
+                        : '保存配置后会自动创建当天的 Markdown 文件。'),
+                  ),
+                ),
+                h(
+                  'div',
+                  { className: 'lc-obsidian-rules' },
+                  h('h3', null, '写入规则'),
+                  h(
+                    'ul',
+                    null,
+                    h('li', null, '文件固定为「仓库目录/YYYY-MM-DD.md」，不存在时自动创建；不会改动仓库里的其他笔记。'),
+                    h(
+                      'li',
+                      null,
+                      '只替换标题 ',
+                      h('code', null, obsidian.heading || '## todo'),
+                      ' 到下一个同级或更高级标题之间的内容；标题外的原文保留。',
+                    ),
+                    h('li', null, '当天任务按截止日期筛选：未完成在前、已完成在后；有开始时间的写成 HH:MM；已放弃任务不写入。'),
+                    h('li', null, '同时写入「## 今日总结」：专注时长、番茄数、任务完成率、AI 复盘（本地规则）和当天感想；该节不存在时追加到文末。'),
+                    h('li', null, '每次写入整节覆盖，不会重复累加；当天没有任务时任务节写入「- 今日暂无任务」。'),
+                    h('li', null, '任务写入标题不能使用「今日总结」，以免和总结节冲突。'),
+                    h('li', null, '开启自动写入后按间隔执行（需保持 DSH 运行）；「立即写入」不受开关影响，关闭开关会停止自动写入。'),
+                    h('li', null, '目录必须是本机绝对路径；只读写填写的目录，不联网、不上传。'),
+                  ),
+                ),
+              ),
+            ),
+            ),
           ),
         );
       };
@@ -6735,6 +7574,18 @@ window.__ModuleLoader__.load({
             },
             h(GlyphIcon, { name: 'calendar', size: 20 }),
             h('span', null, '日历'),
+          ),
+          h(
+            'button',
+            {
+              type: 'button',
+              className: 'lc-nav-btn' + (activeView === 'board' ? ' lc-nav-btn-active' : ''),
+              title: '任务看板',
+              'aria-label': '任务看板',
+              onClick: () => setActiveView('board'),
+            },
+            h(GlyphIcon, { name: 'board', size: 20 }),
+            h('span', null, '看板'),
           ),
           h(
             'button',
@@ -6830,8 +7681,10 @@ window.__ModuleLoader__.load({
             ? h('div', { className: 'lc-page' }, h('div', { className: 'lc-page-inner' }, renderCalendar()))
             : activeView === 'tasks'
               ? renderTasksPage()
-              : activeView === 'matrix'
-                ? renderMatrixPage()
+              : activeView === 'board'
+                ? renderBoardPage()
+                : activeView === 'matrix'
+                  ? renderMatrixPage()
                 : activeView === 'summary'
                 ? renderSummaryPage()
                 : activeView === 'settings'
@@ -7573,6 +8426,7 @@ body[data-ds-dark-theme] .lc-root .lc-table td{border-bottom-color:rgba(255,255,
 .lc-popup-head{padding:4px 8px 6px;font:var(--td-font-body-small);color:var(--td-text-color-secondary);border-bottom:1px solid var(--td-component-stroke);margin-bottom:2px}
 .lc-cal-status-task{padding:6px 8px 6px;font-size:12px;line-height:16px;color:var(--td-text-color-placeholder);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .lc-cal-status-error{padding:2px 8px 6px;font-size:11px;line-height:16px;color:var(--td-error-color,#e34d59)}
+.lc-cal-status-note{padding:2px 8px 6px;font-size:11px;line-height:16px;color:var(--td-text-color-placeholder)}
 .lc-cal-status-pop .lc-popup-list{gap:1px}
 .lc-popup-list{display:flex;flex-direction:column;gap:2px}
 .lc-popup-item{display:flex;align-items:center;width:100%;box-sizing:border-box;padding:6px 8px;border:0;background:transparent;border-radius:var(--td-radius-default);cursor:pointer;font:var(--td-font-body-medium);color:var(--td-text-color-primary);text-align:left}
@@ -7583,6 +8437,7 @@ body[data-ds-dark-theme] .lc-root .lc-table td{border-bottom-color:rgba(255,255,
 .lc-popup-item:hover:not(:disabled){background:var(--td-bg-color-container-hover)}
 .lc-popup-item-active{background:var(--td-brand-color-light);color:var(--td-text-color-brand);font-weight:500}
 .lc-popup-item:disabled{opacity:.5;cursor:progress}
+.lc-popup-item-disabled:disabled{cursor:not-allowed}
 .lc-popup-loading{padding:10px 8px;font:var(--td-font-body-small);color:var(--td-text-color-placeholder)}
 .lc-toast.lc-toast-success{background:var(--td-success-color-light);border-color:var(--td-success-color);color:var(--td-success-color)}
 .lc-toast{position:fixed;left:50%;top:64px;transform:translateX(-50%);z-index:70;max-width:min(520px,82vw);padding:8px 12px;border-radius:var(--td-radius-medium);background:var(--td-error-color-light);border:1px solid var(--td-error-color);color:var(--td-error-color);font:var(--td-font-body-small);box-shadow:var(--td-shadow-2)}
@@ -7904,7 +8759,8 @@ body[data-ds-dark-theme] .lc-root .lc-assign-toast-head{color:#f0d9a8}
 .lc-task-page{display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0}
 .lc-task-top{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 24px 16px;background:var(--lc-brand);color:#fff;-webkit-app-region:drag;app-region:drag;user-select:none;-webkit-user-select:none}
 .lc-task-top-title{font:600 20px/28px var(--td-font-family);letter-spacing:.2px}
-.lc-task-top-sub{margin-top:3px;font:400 12px/18px var(--td-font-family);color:rgba(255,255,255,.78)}
+.lc-task-top-main{min-width:0}
+.lc-task-top-sub{margin-top:3px;font:400 12px/18px var(--td-font-family);color:rgba(255,255,255,.78);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lc-task-top-stats{display:flex;align-items:baseline;gap:16px;font:400 12px/18px var(--td-font-family);color:rgba(255,255,255,.78);white-space:nowrap}
 .lc-task-top-stats span{display:inline-flex;align-items:baseline;gap:5px}
 .lc-task-top-stats b{font:600 18px/22px var(--td-font-family);color:#fff;font-variant-numeric:tabular-nums}
@@ -7929,6 +8785,11 @@ body.lc-col-resizing *{cursor:col-resize!important;user-select:none!important}
 .lc-task-side-label{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lc-task-side-count{flex:0 0 auto;font-size:12px;color:var(--td-text-color-placeholder);font-variant-numeric:tabular-nums}
 .lc-task-side-item-active .lc-task-side-count{color:var(--td-brand-color)}
+.lc-task-side-title-cats{margin-top:18px;padding-top:16px;border-top:1px solid var(--td-component-stroke)}
+.lc-task-cat-nav .lc-task-side-item{height:34px}
+.lc-task-cat-dot{flex:0 0 10px;width:10px;height:10px;border-radius:50%;background:var(--td-text-color-placeholder)}
+.lc-task-cat-dot-all{background:var(--td-brand-color)}
+.lc-task-cat-dot-none{background:#9aa3ad}
 .lc-task-main{min-width:0;min-height:0;overflow:auto;padding:22px 28px 40px;background:var(--td-bg-color-container)}
 .lc-task-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:16px}
 .lc-task-head h2{margin:0;font:600 20px/28px var(--td-font-family);color:var(--td-text-color-primary)}
@@ -8517,24 +9378,25 @@ body[data-ds-dark-theme] .lc-day-event-external{background:rgba(255,255,255,.06)
 @media (max-width: 720px){.lc-settings-head{padding:14px 16px 12px}.lc-settings-body{padding:14px 12px 24px}.lc-settings-card{padding:14px 14px}.lc-settings-sync-btn{margin-left:0}}
 
 /* 统一页面顶部标题栏：尺寸参考日历页，底部圆角 */
-.lc-cal-head,.lc-task-top,.lc-summary-head,.lc-matrix-head,.lc-pomo-head,.lc-settings-head{min-height:69px;padding:14px 16px;border-radius:0 0 12px 12px;box-sizing:border-box;border-bottom:0;flex-shrink:0}
+.lc-cal-head,.lc-task-top,.lc-board-head,.lc-summary-head,.lc-matrix-head,.lc-pomo-head,.lc-settings-head{min-height:69px;padding:14px 16px;border-radius:0 0 12px 12px;box-sizing:border-box;border-bottom:0;flex-shrink:0}
 /* 每个页面的内容区顶部圆角，与日历白底一致：蓝色页头/页面底色从圆角处露出 */
-.lc-task-page,.lc-summary,.lc-pomo-page,.lc-matrix,.lc-settings{background:var(--lc-brand)}
-.lc-tasks,.lc-summary-body,.lc-pomo-body,.lc-matrix-body,.lc-settings-body{border-radius:12px 12px 0 0}
+.lc-task-page,.lc-board,.lc-summary,.lc-pomo-page,.lc-matrix,.lc-settings{background:var(--lc-brand)}
+.lc-tasks,.lc-board-body,.lc-summary-body,.lc-pomo-body,.lc-matrix-body,.lc-settings-body{border-radius:12px 12px 0 0}
 .lc-tasks,.lc-matrix-body{background:var(--td-bg-color-container)}
-.lc-summary-body,.lc-pomo-body,.lc-settings-body{background:var(--td-bg-color-page,#f4f5f7)}
-.lc-cal-title,.lc-task-top-title,.lc-summary-head-title h2,.lc-matrix-head-title h2,.lc-pomo-head-title h1,.lc-settings-title{font:600 14px/20px var(--td-font-family);letter-spacing:0;margin:0}
-.lc-cal-sub,.lc-task-top-sub,.lc-summary-head-title p,.lc-matrix-head-title p,.lc-pomo-head-title p,.lc-settings-sub{margin:3px 0 0;font:400 12px/18px var(--td-font-family);color:rgba(255,255,255,.78);display:block}
+.lc-board-body,.lc-summary-body,.lc-pomo-body,.lc-settings-body{background:var(--td-bg-color-page,#f4f5f7)}
+.lc-cal-title,.lc-task-top-title,.lc-board-title,.lc-summary-head-title h2,.lc-matrix-head-title h2,.lc-pomo-head-title h1,.lc-settings-title{font:600 14px/20px var(--td-font-family);letter-spacing:0;margin:0}
+.lc-cal-sub,.lc-task-top-sub,.lc-board-sub,.lc-summary-head-title p,.lc-matrix-head-title p,.lc-pomo-head-title p,.lc-settings-sub{margin:3px 0 0;font:400 12px/18px var(--td-font-family);color:rgba(255,255,255,.78);display:block}
 .lc-settings-head{display:flex;flex-direction:column;justify-content:center}
 @media (max-width:720px){
-  .lc-cal-head,.lc-task-top,.lc-summary-head,.lc-matrix-head,.lc-pomo-head,.lc-settings-head{min-height:69px;padding:14px 14px;border-radius:0 0 10px 10px}
-  .lc-cal-title,.lc-task-top-title,.lc-summary-head-title h2,.lc-matrix-head-title h2,.lc-pomo-head-title h1,.lc-settings-title{font-size:14px;line-height:20px}
-  .lc-cal-sub,.lc-task-top-sub,.lc-summary-head-title p,.lc-matrix-head-title p,.lc-pomo-head-title p,.lc-settings-sub{font-size:12px;line-height:18px;display:block}
+  .lc-cal-head,.lc-task-top,.lc-board-head,.lc-summary-head,.lc-matrix-head,.lc-pomo-head,.lc-settings-head{min-height:69px;padding:14px 14px;border-radius:0 0 10px 10px}
+  .lc-cal-title,.lc-task-top-title,.lc-board-title,.lc-summary-head-title h2,.lc-matrix-head-title h2,.lc-pomo-head-title h1,.lc-settings-title{font-size:14px;line-height:20px}
+  .lc-cal-sub,.lc-task-top-sub,.lc-board-sub,.lc-summary-head-title p,.lc-matrix-head-title p,.lc-pomo-head-title p,.lc-settings-sub{font-size:12px;line-height:18px;display:block}
 }
 
 /* DSH 左侧栏收起时，页头左侧标题区右移 100px，避开窗口左上角交通灯；右侧控件不动 */
 :is(html,body):has([data-sidebar-collapsed]) .lc-cal-title-wrap,
 :is(html,body):has([data-sidebar-collapsed]) .lc-task-top-main,
+:is(html,body):has([data-sidebar-collapsed]) .lc-board-head-main,
 :is(html,body):has([data-sidebar-collapsed]) .lc-summary-head-title,
 :is(html,body):has([data-sidebar-collapsed]) .lc-matrix-head-title,
 :is(html,body):has([data-sidebar-collapsed]) .lc-pomo-head-title,
@@ -8569,7 +9431,7 @@ body[data-ds-dark-theme] .lc-day-event-external{background:rgba(255,255,255,.06)
 .lc-cal-task-cat.lc-cal-task-done{background:var(--lc-cat-bg)}
 .lc-day-event-cat{background:var(--lc-cat-bg);border-left-color:var(--lc-cat)!important}
 .lc-day-event-cat .lc-day-event-title{color:var(--td-text-color-primary)}
-.lc-matrix-task-cat{box-shadow:inset 3px 0 0 var(--lc-cat)}
+.lc-matrix-task-cat{box-shadow:none}
 .lc-matrix-task-cat.is-selected{background:var(--td-brand-color-light)}
 .lc-sum-slots-axis{display:grid;grid-template-columns:repeat(5,1fr);gap:0;margin:12px 0 0;font:400 10px/14px var(--td-font-family);color:var(--td-text-color-placeholder);font-variant-numeric:tabular-nums}
 .lc-sum-slots-axis span:nth-child(2),.lc-sum-slots-axis span:nth-child(3),.lc-sum-slots-axis span:nth-child(4){text-align:center}
@@ -8603,6 +9465,113 @@ body[data-ds-dark-theme] .lc-sum-slot.is-filled{border-color:rgba(255,255,255,.0
 body[data-ds-dark-theme] .lc-root .lc-scrolling{scrollbar-color:rgba(255,255,255,.3) transparent}
 body[data-ds-dark-theme] .lc-root .lc-scrolling::-webkit-scrollbar-thumb{background:rgba(255,255,255,.3);background-clip:content-box}
 body[data-ds-dark-theme] .lc-root .lc-scrolling::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.45);background-clip:content-box}
+
+/* 设置页：左侧分区导航，右侧详细设置 */
+.lc-settings-body{padding:18px 22px 0;display:flex;flex-direction:row;gap:16px;overflow:hidden;align-items:stretch}
+.lc-settings-nav{flex:0 0 200px;width:200px;align-self:flex-start;max-height:100%;overflow:auto;background:var(--td-bg-color-container);border:1px solid var(--td-component-stroke);border-radius:10px;padding:8px;display:flex;flex-direction:column;gap:2px;box-sizing:border-box}
+.lc-settings-nav-btn{display:flex;align-items:center;gap:9px;width:100%;padding:9px 10px;border:0;border-radius:7px;background:transparent;color:var(--td-text-color-secondary);font:400 12.5px/18px var(--td-font-family);text-align:left;cursor:pointer;transition:background-color .15s,color .15s}
+.lc-settings-nav-btn:hover{background:var(--td-bg-color-secondarycontainer);color:var(--td-text-color-primary)}
+.lc-settings-nav-btn.is-active{background:var(--td-brand-color-light);color:var(--td-brand-color);font-weight:600}
+.lc-settings-nav-btn svg{flex:0 0 auto}
+.lc-settings-detail{flex:1 1 auto;min-width:0;overflow:auto;display:flex;flex-direction:column;gap:14px;padding-bottom:30px;box-sizing:border-box}
+.lc-settings-detail > .lc-settings-card{display:none}
+.lc-settings-detail[data-active-settings="categories"] > .lc-settings-card:nth-child(1),
+.lc-settings-detail[data-active-settings="day-range"] > .lc-settings-card:nth-child(2),
+.lc-settings-detail[data-active-settings="local-calendar"] > .lc-settings-card:nth-child(3),
+.lc-settings-detail[data-active-settings="data"] > .lc-settings-card:nth-child(4),
+.lc-settings-detail[data-active-settings="obsidian"] > .lc-settings-card:nth-child(5){display:block}
+.lc-settings-badge{flex:0 0 auto;padding:2px 7px;border-radius:5px;background:var(--td-brand-color-light);color:var(--td-brand-color);font:500 10px/16px var(--td-font-family)}
+.lc-obsidian-enable{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:14px;padding:10px 12px;border:1px solid var(--td-component-stroke);border-radius:8px;background:var(--td-bg-color-page)}
+.lc-obsidian-enable > div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.lc-obsidian-enable strong{font:600 12.5px/18px var(--td-font-family);color:var(--td-text-color-primary)}
+.lc-obsidian-enable span{font:400 11.5px/17px var(--td-font-family);color:var(--td-text-color-placeholder)}
+.lc-obsidian-form{display:flex;flex-direction:column;gap:13px;margin-top:14px}
+.lc-obsidian-field{display:flex;flex-direction:column;gap:6px;min-width:0}
+.lc-obsidian-label{font:500 12px/18px var(--td-font-family);color:var(--td-text-color-secondary)}
+.lc-obsidian-input{width:100%;height:34px;padding:0 10px;border:1px solid var(--td-component-stroke);border-radius:7px;background:var(--td-bg-color-container);color:var(--td-text-color-primary);font:400 13px/20px var(--td-font-family);outline:none;box-sizing:border-box;transition:border-color .15s,box-shadow .15s}
+.lc-obsidian-input:focus{border-color:var(--td-brand-color);box-shadow:0 0 0 2px var(--td-brand-color-light)}
+.lc-obsidian-input::placeholder{color:var(--td-text-color-placeholder)}
+.lc-obsidian-path{font:11px/16px ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--td-text-color-placeholder);word-break:break-all}
+.lc-obsidian-grid{display:grid;grid-template-columns:minmax(0,1fr) 150px;gap:12px}
+.lc-obsidian-interval-wrap{display:flex;align-items:center;gap:6px}
+.lc-obsidian-interval-wrap .lc-obsidian-input{width:100px;flex:0 0 auto}
+.lc-obsidian-interval-wrap span{font:400 12px/18px var(--td-font-family);color:var(--td-text-color-secondary)}
+.lc-obsidian-actions{display:flex;gap:8px;flex-wrap:wrap}
+.lc-obsidian-status{display:flex;flex-direction:column;gap:3px;padding:9px 11px;border:1px solid var(--td-component-stroke);border-radius:8px;background:var(--td-bg-color-page);font:400 11.5px/18px var(--td-font-family)}
+.lc-obsidian-status strong{font-weight:600;color:var(--td-text-color-secondary)}
+.lc-obsidian-status span{color:var(--td-text-color-placeholder);word-break:break-word}
+.lc-obsidian-status.is-error{border-color:rgba(213,73,65,.35);background:rgba(213,73,65,.06)}
+.lc-obsidian-status.is-error strong{color:var(--td-error-color)}
+.lc-obsidian-status.is-ok strong{color:var(--td-success-color)}
+.lc-obsidian-rules{margin-top:13px;padding-top:12px;border-top:1px solid var(--td-component-stroke)}
+.lc-obsidian-rules h3{margin:0 0 4px;font:600 12px/18px var(--td-font-family);color:var(--td-text-color-secondary)}
+.lc-obsidian-rules ul{margin:0;padding-left:18px;color:var(--td-text-color-placeholder);font:400 12px/20px var(--td-font-family)}
+.lc-obsidian-rules li{margin:2px 0}
+.lc-obsidian-rules code{padding:1px 4px;border-radius:4px;background:var(--td-bg-color-container);color:var(--td-text-color-secondary);font:11px/16px ui-monospace,SFMono-Regular,Menlo,monospace}
+@media (max-width: 720px){
+  .lc-settings-body{padding:14px 12px 0;gap:10px}
+  .lc-settings-nav{flex-basis:150px;width:150px;padding:6px}
+  .lc-settings-nav-btn{padding:8px;font-size:12px;gap:7px}
+  .lc-settings-detail{padding-bottom:24px}
+  .lc-obsidian-grid{grid-template-columns:1fr}
+  .lc-obsidian-interval-wrap .lc-obsidian-input{width:90px}
+}
+
+
+/* ── 看板 ───────────────────────────────────────────────────────────── */
+.lc-board{flex:1 1 auto;display:flex;flex-direction:column;min-width:0;min-height:0;color:var(--td-text-color-primary)}
+.lc-board-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;background:var(--lc-brand);color:#fff;-webkit-app-region:drag;app-region:drag;user-select:none;-webkit-user-select:none}
+.lc-board-head-main{min-width:0}
+.lc-board-actions{display:flex;align-items:center;justify-content:flex-end;gap:8px;margin-left:auto;flex-wrap:wrap;-webkit-app-region:no-drag;app-region:no-drag}
+.lc-board-stat{font:400 12px/18px var(--td-font-family);color:rgba(255,255,255,.82);white-space:nowrap}
+.lc-board-stat b{font-weight:600;color:#fff;margin-right:2px}
+.lc-board-head .lc-icon-btn{color:rgba(255,255,255,.9)}
+.lc-board-head .lc-icon-btn:hover{background:rgba(255,255,255,.16);color:#fff}
+.lc-board-new{display:inline-flex;align-items:center;gap:5px;height:30px;padding:0 12px;border:1px solid rgba(255,255,255,.45);border-radius:8px;background:rgba(255,255,255,.14);color:#fff;font:500 12px/1 var(--td-font-family);cursor:pointer;white-space:nowrap;transition:background .15s,border-color .15s}
+.lc-board-new:hover{background:rgba(255,255,255,.24);border-color:rgba(255,255,255,.7)}
+.lc-board-new:focus-visible{outline:2px solid #fff;outline-offset:2px}
+.lc-board-body{flex:1 1 auto;min-height:0;overflow:auto;box-sizing:border-box;padding:16px 20px 24px}
+.lc-board-cols{display:grid;grid-template-columns:repeat(3,minmax(260px,1fr));gap:14px;align-items:stretch;min-height:100%}
+.lc-board-col{--lc-board-accent:#8f9aa8;display:flex;flex-direction:column;gap:10px;min-height:190px;padding:10px;border:1px solid var(--td-component-stroke);border-top:3px solid var(--lc-board-accent);border-radius:12px;background:var(--td-bg-color-secondarycontainer);transition:background .15s,border-color .15s,box-shadow .15s}
+.lc-board-col.is-over{background:var(--lc-brand-soft);border-color:var(--lc-brand);box-shadow:inset 0 0 0 1px var(--lc-brand)}
+.lc-board-col-head{display:flex;align-items:center;gap:7px;padding:2px 4px 7px;border-bottom:1px solid var(--td-component-stroke)}
+.lc-board-col-dot{width:8px;height:8px;flex:0 0 auto;border-radius:50%;background:var(--lc-board-accent)}
+.lc-board-col-name{font:600 13px/18px var(--td-font-family);color:var(--td-text-color-primary);white-space:nowrap}
+.lc-board-col-count{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;margin-left:auto;padding:0 6px;border-radius:10px;background:var(--td-bg-color-container);color:var(--td-text-color-secondary);font:500 11px/20px var(--td-font-family)}
+.lc-board-list{display:flex;flex-direction:column;gap:8px;min-height:64px;flex:1 1 auto}
+.lc-board-card{display:flex;flex-direction:column;gap:8px;padding:10px 12px;border:1px solid var(--td-component-stroke);border-radius:10px;background:var(--td-bg-color-container);box-shadow:0 1px 2px rgba(15,23,42,.04);cursor:grab;transition:box-shadow .15s,border-color .15s,opacity .15s}
+.lc-board-card:hover{border-color:var(--td-brand-color-focus);box-shadow:0 3px 10px rgba(15,23,42,.08)}
+.lc-board-card:focus-visible{outline:2px solid var(--lc-brand);outline-offset:2px}
+.lc-board-card.is-dragging{opacity:.42;cursor:grabbing}
+.lc-board-card.is-busy{opacity:.62;pointer-events:none}
+.lc-board-card-top{display:flex;align-items:flex-start;gap:8px}
+.lc-board-check{margin-top:2px}
+.lc-board-card-title{flex:1 1 auto;min-width:0;font:500 13px/19px var(--td-font-family);color:var(--td-text-color-primary);word-break:break-word}
+.lc-board-card-title.is-done{text-decoration:line-through;color:var(--td-text-color-placeholder)}
+.lc-board-card-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font:400 11px/16px var(--td-font-family);color:var(--td-text-color-secondary)}
+.lc-board-cat{display:inline-flex;align-items:center;gap:4px;max-width:132px;min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.lc-board-cat-dot{width:7px;height:7px;flex:0 0 auto;border-radius:50%}
+.lc-board-date{white-space:nowrap}
+.lc-board-date.is-overdue{color:var(--td-error-color);font-weight:500}
+.lc-board-tomatoes{font-size:11px}
+.lc-board-empty{display:flex;align-items:center;justify-content:center;min-height:64px;padding:10px;border:1px dashed var(--td-component-border);border-radius:8px;color:var(--td-text-color-placeholder);font:400 12px/18px var(--td-font-family);text-align:center}
+.lc-board-error{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;padding:8px 12px;border-radius:8px;background:var(--td-error-color-light);color:var(--td-error-color);font:400 12px/18px var(--td-font-family)}
+.lc-board-error .lc-btn{flex:0 0 auto;height:26px;padding:0 10px;font-size:12px}
+body[data-ds-dark-theme] .lc-board-body{background:#242424}
+body[data-ds-dark-theme] .lc-board-col{background:#2b2b2b;border-color:#393939}
+body[data-ds-dark-theme] .lc-board-col-count{background:#242424}
+body[data-ds-dark-theme] .lc-board-card{background:#242424;border-color:#3a3a3a;box-shadow:0 1px 2px rgba(0,0,0,.32)}
+body[data-ds-dark-theme] .lc-board-card:hover{border-color:#4b5f86;box-shadow:0 3px 12px rgba(0,0,0,.3)}
+body[data-ds-dark-theme] .lc-board-col.is-over{background:rgba(47,124,246,.16);border-color:var(--lc-brand)}
+@media (max-width:720px){
+  .lc-board-head{padding:12px 14px}
+  .lc-board-actions{gap:6px}
+  .lc-board-stat{font-size:11px}
+  .lc-board-new{height:28px;padding:0 10px}
+  .lc-board-body{padding:12px 12px 18px}
+  .lc-board-cols{grid-template-columns:repeat(3,minmax(240px,1fr));gap:10px}
+  .lc-board-col{padding:8px;border-radius:10px}
+}
 
 `;
 
