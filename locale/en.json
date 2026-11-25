@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Task calendar",
+    "description": "Local task calendar, Pomodoro timer and review: task categories and colored cards, task lists, week/month/day calendar, urgent/important matrix, content-aware KISS retrospective, free-form reflections, a 48-cell daily time strip, subtask checklists, focus statistics, configurable day-view hours, and read-only macOS Calendar event sync. All data stays in local SQLite.",
+    "detail": "docs/DETAIL.md"
+  }
+}

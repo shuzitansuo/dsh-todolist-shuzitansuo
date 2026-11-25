@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <style>
+    .cal-body { fill: #eef3ff; stroke: #0052d9; }
+    .cal-line { stroke: #0052d9; }
+    .cal-dot { fill: #0052d9; }
+    @media (prefers-color-scheme: dark) {
+      .cal-body { fill: #16203a; stroke: #7aa2ff; }
+      .cal-line { stroke: #7aa2ff; }
+      .cal-dot { fill: #7aa2ff; }
+    }
+  </style>
+  <rect class="cal-body" x="8" y="12" width="48" height="44" rx="8" stroke-width="3.2"/>
+  <path class="cal-line" d="M8 24h48" stroke-width="3.2"/>
+  <path class="cal-line" d="M20 8v8M44 8v8" stroke-width="3.2" stroke-linecap="round"/>
+  <circle class="cal-dot" cx="21" cy="34" r="2.6"/>
+  <circle class="cal-dot" cx="32" cy="34" r="2.6"/>
+  <circle class="cal-dot" cx="43" cy="34" r="2.6"/>
+  <circle class="cal-dot" cx="21" cy="44" r="2.6"/>
+  <circle class="cal-dot" cx="32" cy="44" r="2.6"/>
+</svg>

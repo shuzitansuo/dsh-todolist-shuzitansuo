@@ -1,0 +1,6 @@
+# 本地任务日历插件。
+#
+# name 必须是 package.json 里完整的包名，否则客户端 bundle 与宿主端都加载不到。
+- insert:
+    - id: calendar
+      name: '@local/dsh-calendar'
