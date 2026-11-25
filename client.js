@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const { useState, useEffect, useRef, useCallback } = React;
 
-    const APP_VERSION = '0.2.1';
+    const APP_VERSION = '0.2.2';
     const HEADERS = { 'x-calendar-client': '1' };
     const ORDER_KEY = 'dsh-calendar-task-order-v1';
     const TIMES_KEY = 'dsh-calendar-task-times-v1';
@@ -1408,7 +1408,7 @@ window.__ModuleLoader__.load({
 
       const openUpdatePanel = () => {
         setUpdatePanel({ open: true, loading: true, applying: false, data: null, result: null, restart: null, error: '', repoInput: '', editingRepo: false, saving: false });
-        void fetchUpdate();
+        void fetchUpdate({ force: true });
       };
 
       const saveUpdateRepo = () => {
