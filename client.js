@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const { useState, useEffect, useRef, useCallback } = React;
 
-    const APP_VERSION = '0.2.3';
+    const APP_VERSION = '0.2.4';
     const HEADERS = { 'x-calendar-client': '1' };
     const ORDER_KEY = 'dsh-calendar-task-order-v1';
     const TIMES_KEY = 'dsh-calendar-task-times-v1';
@@ -1030,6 +1030,7 @@ window.__ModuleLoader__.load({
       const [completingTasks, setCompletingTasks] = useState([]);
       const [actionNotice, setActionNotice] = useState(null);
       const [updatePanel, setUpdatePanel] = useState(null);
+      const updateAutoTriedRef = useRef('');
       const [settingsReady, setSettingsReady] = useState(false);
       const [syncCalendar, setSyncCalendar] = useState(false);
       const [dayStartMin, setDayStartMin] = useState(DEFAULT_DAY_START_MIN);
@@ -1407,6 +1408,7 @@ window.__ModuleLoader__.load({
       };
 
       const openUpdatePanel = () => {
+        updateAutoTriedRef.current = '';
         setUpdatePanel({ open: true, loading: true, applying: false, data: null, result: null, restart: null, error: '', repoInput: '', editingRepo: false, saving: false });
         void fetchUpdate({ force: true });
       };
@@ -1447,6 +1449,18 @@ window.__ModuleLoader__.load({
             : prev));
         }
       };
+
+      useEffect(() => {
+        if (!updatePanel || !updatePanel.open || updatePanel.loading || updatePanel.applying || updatePanel.result) return undefined;
+        if (!updatePanel.data || !updatePanel.data.hasUpdate) return undefined;
+        const tag = String(updatePanel.data.tag || '');
+        if (!tag || updateAutoTriedRef.current === tag) return undefined;
+        updateAutoTriedRef.current = tag;
+        const timer = setTimeout(() => {
+          void applyUpdateNow();
+        }, 2500);
+        return () => clearTimeout(timer);
+      }, [updatePanel?.open, updatePanel?.loading, updatePanel?.data?.tag, updatePanel?.applying, updatePanel?.result]);
 
       const [calDragSource, setCalDragSource] = useState(null);
       const [calDragTarget, setCalDragTarget] = useState(null);
@@ -6437,7 +6451,7 @@ window.__ModuleLoader__.load({
                               'span',
                               null,
                               data.hasUpdate
-                                ? '发现新版本 ' + data.tag + '，可自动更新，无需手动下载。'
+                                ? '发现新版本 ' + data.tag + '，即将自动更新；关闭弹窗可取消。'
                                 : '已经是最新版本。',
                             ),
                           )
