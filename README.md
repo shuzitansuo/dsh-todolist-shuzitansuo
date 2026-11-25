@@ -54,7 +54,7 @@ $DSH_HOME/calendar/db/calendar.sqlite
 
 ## 隐私
 
-- 不读取第三方系统，不上传任务数据。
+- 不连接云端任务系统，不上传任务数据。
 - 只有点击「检查更新」时会请求 GitHub Releases API；不发送本地数据。
 - macOS 日历同步只读本机日历，写入插件自己的数据库。
 
