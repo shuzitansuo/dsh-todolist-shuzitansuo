@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const { useState, useEffect, useRef, useCallback } = React;
 
-    const APP_VERSION = '0.2.4';
+    const APP_VERSION = '0.3.0';
     const HEADERS = { 'x-calendar-client': '1' };
     const ORDER_KEY = 'dsh-calendar-task-order-v1';
     const TIMES_KEY = 'dsh-calendar-task-times-v1';
@@ -16,6 +16,22 @@ window.__ModuleLoader__.load({
     const DAY_DETAIL_W_KEY = 'dsh-calendar-day-detail-w-v1';
     const POMO_ACTIVE_KEY = 'dsh-calendar-pomodoro-active-v1';
     const POMO_PRESETS = [25, 30, 45];
+    const DEFAULT_VIEW_KEY = 'dsh-calendar-default-view-v1';
+    const DEFAULT_VIEW_OPTIONS = [
+      { key: 'tasks', label: '任务', icon: 'list' },
+      { key: 'calendar', label: '日历', icon: 'calendar' },
+      { key: 'matrix', label: '四象限', icon: 'grid' },
+      { key: 'board', label: '看板', icon: 'board' },
+    ];
+    const isDefaultView = (value) => DEFAULT_VIEW_OPTIONS.some((item) => item.key === value);
+    const readDefaultView = () => {
+      try {
+        const value = localStorage.getItem(DEFAULT_VIEW_KEY);
+        return isDefaultView(value) ? value : 'calendar';
+      } catch (error) {
+        return 'calendar';
+      }
+    };
 
     const DEFAULT_DAY_START_MIN = 8 * 60;
     const DEFAULT_DAY_END_MIN = 24 * 60;
@@ -259,7 +275,88 @@ window.__ModuleLoader__.load({
       if (!title) title = original;
       return { title, startTime };
     };
+    // 识别「每天 / 每个工作日 / 每周一」这类重复短语，并把它从标题里移除。
+    const parseTaskRecurrenceText = (text) => {
+      const original = String(text || '').trim();
+      const match = /每(?:个)?(工作日|天|日|(?:周|星期|礼拜)([一二三四五六日天])?)/.exec(original);
+      if (!match) return { title: original, rule: '', weekday: null, label: '' };
+      const token = match[0];
+      let rule = 'daily';
+      let weekday = null;
+      let label = '每天';
+      if (match[1] === '工作日') {
+        rule = 'workdays';
+        label = '每个工作日';
+      } else if (match[1] === '天' || match[1] === '日') {
+        rule = 'daily';
+        label = '每天';
+      } else {
+        rule = 'weekly';
+        weekday = match[2] ? WEEKDAY_CHARS[match[2]] : null;
+        label = weekday == null ? '每周' : '每周' + match[2];
+      }
+      let title = (original.slice(0, match.index) + original.slice(match.index + token.length))
+        .replace(/^[\s,，。、;；:：\-—]+/, '')
+        .replace(/[\s,，。、;；:：\-—]+$/, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!title) title = original;
+      return { title, rule, weekday, label };
+    };
+    // 重复任务的第一天：未写明确日期时，按规则落到下一个发生日。
+    const nextRecurrenceKey = (baseKey, rule, weekday) => {
+      const base = new Date((baseKey || todayKey()) + 'T00:00:00');
+      if (rule === 'workdays') {
+        while (base.getDay() === 0 || base.getDay() === 6) base.setDate(base.getDate() + 1);
+        return dateKeyOf(base);
+      }
+      if (rule === 'weekly' && weekday != null) {
+        for (let i = 0; i < 7; i += 1) {
+          if (base.getDay() === weekday) return dateKeyOf(base);
+          base.setDate(base.getDate() + 1);
+        }
+      }
+      return dateKeyOf(base);
+    };
+    // 组合日期与时间识别，供快速添加和各任务弹窗共用。
+    const parseTaskNaturalInput = (text, baseKey) => {
+      const recurrence = parseTaskRecurrenceText(text);
+      const dateParsed = parseTaskDateText(recurrence.title, baseKey);
+      const timeParsed = parseTaskTimeText(dateParsed.title);
+      return {
+        title: timeParsed.title,
+        date: dateParsed.date || (recurrence.rule ? nextRecurrenceKey(baseKey, recurrence.rule, recurrence.weekday) : ''),
+        startTime: timeParsed.startTime,
+        recurrence: recurrence.rule,
+        recurrenceWeekday: recurrence.weekday,
+        recurrenceLabel: recurrence.label,
+      };
+    };
     const todayKey = () => dateKeyOf(new Date());
+    const shortDateLabel = (deadline) => {
+      const key = String(deadline || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(key)) return key;
+      if (key === todayKey()) return '今天';
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      if (key === dateKeyOf(tomorrow)) return '明天';
+      const parts = key.split('-');
+      return parts[0] === String(new Date().getFullYear()) ? parts[1] + '-' + parts[2] : key;
+    };
+    const projectDateText = (key) => {
+      const parts = String(key || '').split('-');
+      return parts.length === 3 ? parts[0] + '/' + parts[1] + '/' + parts[2] : String(key || '');
+    };
+    const projectDaysLeft = (endDate) => {
+      const end = new Date(String(endDate || '') + 'T00:00:00');
+      const today = new Date(todayKey() + 'T00:00:00');
+      if (Number.isNaN(end.getTime())) return { days: null, text: '' };
+      const days = Math.round((end - today) / 86400000);
+      if (days < 0) return { days, text: '已结束' };
+      if (days === 0) return { days, text: '今天结束' };
+      return { days, text: '剩余 ' + days + ' 天' };
+    };
+    const PROJECT_ICONS = ['📁', '📌', '🚀', '🎯', '💡', '📚', '💼', '🏠', '❤️', '🌱', '🎨', '🧪', '🏃', '☕', '🗂️', '⭐'];
     const matrixQuadrantOf = (task, today = todayKey()) => {
       const manual = Number(task.quadrant);
       if ([1, 2, 3, 4].includes(manual)) return 'q' + manual;
@@ -416,6 +513,69 @@ window.__ModuleLoader__.load({
 
     const DROPPED_STATUSES = ['dropped', 'pause', 'cancel'];
     const isDroppedStatus = (status) => DROPPED_STATUSES.includes(status);
+
+    // 项目进度：时间条 + 完成率 + 一句基于进度的鼓励。
+    const projectProgressInfo = (project, tasks, today = todayKey()) => {
+      const start = new Date(String(project.startDate || '') + 'T00:00:00');
+      const end = new Date(String(project.endDate || '') + 'T00:00:00');
+      const now = new Date(today + 'T00:00:00');
+      const valid = !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime());
+      const span = valid ? Math.max(1, Math.round((end - start) / 86400000)) : 1;
+      const elapsed = valid ? clamp(Math.round((now - start) / 86400000), 0, span) : 0;
+      const daysLeft = valid ? Math.round((end - now) / 86400000) : null;
+      const timePct = valid ? elapsed / span : 0;
+      const active = (Array.isArray(tasks) ? tasks : []).filter((task) => !isDroppedStatus(task.status));
+      const total = active.length;
+      const done = active.filter((task) => task.done || task.status === 'done').length;
+      const rate = total ? done / total : 0;
+      const overdue = active.filter(
+        (task) => !task.done && task.status !== 'done' && task.deadline && task.deadline < today,
+      ).length;
+      let note;
+      if (project.archived) {
+        note = '项目已归档，记录和完成情况都保留；需要继续推进时，在左侧取消归档即可。';
+      } else if (valid && start > now) {
+        note = '项目还没开始，先规划好第一周要推进的事，开始当天再挑一件最重要的先做。';
+      } else if (!total) {
+        note = '项目刚起步，先添加第一件可以完成的小任务，进度就会开始累积。';
+      } else if (rate >= 1) {
+        note = '所有任务都已完成，可以整理收尾、写一句项目总结，然后安心归档。';
+      } else if (daysLeft !== null && daysLeft < 0) {
+        note = '已超过截止日期，先盘点未完成的任务：能收尾的收尾，需要延期的重新排期。';
+      } else if (daysLeft === 0) {
+        note = '今天是截止日，先完成最关键的一件事，再处理次要事项。';
+      } else if (overdue > 0 && rate < 0.5) {
+        note = '有 ' + overdue + ' 项任务已经逾期，先挑最关键的一项补齐，再推进其余任务。';
+      } else if (rate >= 0.8) {
+        note = '进展很稳，最后几项重点确认，别让小尾巴拖住收尾。';
+      } else if (rate >= 0.5) {
+        note = '已经过半，保持当前节奏，把注意力留给还没完成的任务。';
+      } else if (rate > 0) {
+        note = '已经迈出第一步，先完成一件小事，势头会慢慢起来。';
+      } else {
+        note = '先挑一件最重要的任务开始，完成第一个就能带动整个项目的节奏。';
+      }
+      if (!project.archived && total && rate < 1 && daysLeft !== null && daysLeft > 0 && timePct > 0.2) {
+        if (rate + 0.15 < timePct) {
+          note += ' 时间过去了 ' + Math.round(timePct * 100) + '%，完成 ' + Math.round(rate * 100) + '%，先聚焦最重要的 1–2 件。';
+        } else if (rate > timePct + 0.1) {
+          note += ' 完成进度领先时间进度，保持这个节奏。';
+        }
+      }
+      return {
+        startText: projectDateText(project.startDate),
+        endText: projectDateText(project.endDate),
+        total,
+        done,
+        rate,
+        overdue,
+        daysLeft,
+        elapsed: Math.max(0, elapsed),
+        span,
+        timePct,
+        note,
+      };
+    };
     const pomodoroBlock = (task) => {
       if (!task) return null;
       if (Boolean(task.done) || task.status === 'done') {
@@ -680,6 +840,7 @@ window.__ModuleLoader__.load({
       close: ['M18 6 6 18', 'm6 6 12 12'],
       check: ['M20 6 9 17l-5-5'],
       trash: ['M3 6h18', 'M8 6V4h8v2', 'M19 6l-1 14H6L5 6', 'M10 11v6', 'M14 11v6'],
+      archive: ['M3 4h18v4H3z', 'M5 8v12h14V8', 'M10 12h4'],
       calendar: ['M8 2v4', 'M16 2v4', 'M3 10h18', 'M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z'],
       list: ['M9 6h11', 'M9 12h11', 'M9 18h11', 'M4 6h.01', 'M4 12h.01', 'M4 18h.01'],
       board: ['M4 5h16v14H4z', 'M9 5v14', 'M15 5v14'],
@@ -689,6 +850,7 @@ window.__ModuleLoader__.load({
       'check-circle': ['M22 11.08V12a10 10 0 1 1-5.93-9.14', 'm9 11 3 3L22 4'],
       chart: ['M3 3v18h18', 'M7 16v-5', 'M12 16V8', 'M17 16v-3'],
       timer: ['M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z', 'M12 6v6l4 2'],
+      repeat: ['M17 1l4 4-4 4', 'M3 11V9a4 4 0 0 1 4-4h14', 'M7 23l-4-4 4-4', 'M21 13v2a4 4 0 0 1-4 4H3'],
       sparkle: ['M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z', 'M19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9L19 15z'],
       grid: ['M4 4h6v6H4z', 'M14 4h6v6h-6z', 'M4 14h6v6H4z', 'M14 14h6v6h-6z'],
       edit: ['M12 20h9', 'M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z'],
@@ -998,6 +1160,14 @@ window.__ModuleLoader__.load({
       const [categoriesLoading, setCategoriesLoading] = useState(true);
       const [categoriesError, setCategoriesError] = useState('');
       const [categoryDraft, setCategoryDraft] = useState({ name: '', color: '#2f7cf6' });
+      const [projects, setProjects] = useState([]);
+      const [projectsLoading, setProjectsLoading] = useState(true);
+      const [projectsError, setProjectsError] = useState('');
+      const [projectId, setProjectId] = useState(null);
+      const [projectModal, setProjectModal] = useState(null);
+      const [projectBusy, setProjectBusy] = useState(false);
+      const [projectMenu, setProjectMenu] = useState(null);
+      const [projectArchivedOpen, setProjectArchivedOpen] = useState(false);
       const [categoryBusy, setCategoryBusy] = useState('');
       const [calendarMode, setCalendarMode] = useState('day');
       const [calendarMonth, setCalendarMonth] = useState(() => {
@@ -1011,6 +1181,7 @@ window.__ModuleLoader__.load({
       const [calendarTaskOrder, setCalendarTaskOrder] = useState(loadOrderMap);
       const [calendarDayTimes, setCalendarDayTimes] = useState(loadTimeMap);
       const [calendarStatusMenu, setCalendarStatusMenu] = useState(null);
+      const [seriesPrompt, setSeriesPrompt] = useState(null);
       const [taskModal, setTaskModal] = useState(null);
       const [dayTaskId, setDayTaskId] = useState(null);
       const [matrixDetailOpen, setMatrixDetailOpen] = useState(false);
@@ -1057,7 +1228,10 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const [activeView, setActiveView] = useState('calendar');
+      const [activeView, setActiveView] = useState(() => readDefaultView());
+      const [defaultView, setDefaultView] = useState(() => readDefaultView());
+      const [defaultViewBusy, setDefaultViewBusy] = useState('');
+      const defaultViewAppliedRef = useRef(false);
       const [settingsSection, setSettingsSection] = useState('categories');
       const settingsDetailRef = useRef(null);
       const [obsidian, setObsidian] = useState({
@@ -1104,7 +1278,15 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (activeView !== 'matrix' && activeView !== 'board') setMatrixDetailOpen(false);
       }, [activeView]);
-      const [summaryMode, setSummaryMode] = useState('week');
+      useEffect(() => {
+        if (!seriesPrompt) return undefined;
+        const onKeyDown = (event) => {
+          if (event.key === 'Escape' && !seriesPrompt.busy) setSeriesPrompt(null);
+        };
+        window.addEventListener('keydown', onKeyDown);
+        return () => window.removeEventListener('keydown', onKeyDown);
+      }, [seriesPrompt]);
+      const [summaryMode, setSummaryMode] = useState('day');
       const [summaryAnchor, setSummaryAnchor] = useState(() => todayKey());
       const [summarySeed, setSummarySeed] = useState(0);
       const [summaryNote, setSummaryNote] = useState({
@@ -1190,6 +1372,19 @@ window.__ModuleLoader__.load({
               setDayStartMin(start);
               setDayEndMin(end);
             }
+            const savedView = String(settings.defaultView || '');
+            if (isDefaultView(savedView)) {
+              setDefaultView(savedView);
+              if (!defaultViewAppliedRef.current) {
+                defaultViewAppliedRef.current = true;
+                setActiveView(savedView);
+                try {
+                  localStorage.setItem(DEFAULT_VIEW_KEY, savedView);
+                } catch (error) {
+                  /* 忽略本地存储失败 */
+                }
+              }
+            }
             setSettingsReady(true);
           })
           .catch(() => {
@@ -1263,6 +1458,28 @@ window.__ModuleLoader__.load({
           body: JSON.stringify(patch),
         });
         return (res && res.settings) || {};
+      };
+
+      const changeDefaultView = async (key) => {
+        if (defaultViewBusy || key === defaultView || !isDefaultView(key)) return;
+        const previous = defaultView;
+        setDefaultView(key);
+        setDefaultViewBusy(key);
+        try {
+          const saved = await saveSettings({ defaultView: key });
+          const next = isDefaultView(String(saved.defaultView || '')) ? String(saved.defaultView) : key;
+          setDefaultView(next);
+          try {
+            localStorage.setItem(DEFAULT_VIEW_KEY, next);
+          } catch (error) {
+            /* 忽略本地存储失败 */
+          }
+        } catch (error) {
+          setDefaultView(previous);
+          showNotice(error.message || '默认视图保存失败');
+        } finally {
+          setDefaultViewBusy('');
+        }
       };
 
       const toggleLocalCalendar = async () => {
@@ -1472,6 +1689,7 @@ window.__ModuleLoader__.load({
       const dragTaskRef = useRef(null);
       const dayClickBlockedRef = useRef(0);
       const modalDialogRef = useRef(null);
+      const projectDialogRef = useRef(null);
 
       const loadMyTasks = useCallback(async () => {
         setMyTasks((prev) => Object.assign({}, prev, { loading: true, error: '' }));
@@ -1503,6 +1721,28 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         loadCategories();
       }, [loadCategories]);
+
+      const loadProjects = useCallback(async () => {
+        setProjectsLoading(true);
+        try {
+          const res = await api('/calendar/api/projects?t=' + Date.now());
+          setProjects(res.projects || []);
+          setProjectsError('');
+        } catch (error) {
+          setProjectsError(error.message);
+        } finally {
+          setProjectsLoading(false);
+        }
+      }, []);
+
+      useEffect(() => {
+        loadProjects();
+      }, [loadProjects]);
+
+      useEffect(() => {
+        if (!projectId) return;
+        if (!projects.some((project) => String(project.id) === String(projectId))) setProjectId(null);
+      }, [projects, projectId]);
 
       useEffect(() => {
         if (!taskCategoryId || taskCategoryId === 'none') return;
@@ -1587,6 +1827,140 @@ window.__ModuleLoader__.load({
           setCategoriesError(error.message);
         } finally {
           setCategoryBusy('');
+        }
+      };
+
+      const openProjectModal = (project = null) => {
+        setProjectMenu(null);
+        if (project && project.id) {
+          setProjectModal({
+            mode: 'edit',
+            id: project.id,
+            name: project.name || '',
+            icon: project.icon || '📁',
+            startDate: project.startDate || todayKey(),
+            endDate: project.endDate || todayKey(),
+            error: '',
+          });
+          return;
+        }
+        const end = new Date();
+        end.setDate(end.getDate() + 30);
+        setProjectModal({
+          mode: 'create',
+          id: null,
+          name: '',
+          icon: '📁',
+          startDate: todayKey(),
+          endDate: dateKeyOf(end),
+          error: '',
+        });
+      };
+
+      const submitProject = async () => {
+        if (!projectModal || projectBusy) return;
+        const name = String(projectModal.name || '').trim();
+        const startDate = String(projectModal.startDate || '');
+        const endDate = String(projectModal.endDate || '');
+        if (!name) {
+          setProjectModal((prev) => (prev ? Object.assign({}, prev, { error: '请填写项目名称' }) : prev));
+          return;
+        }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(startDate) || !/^\d{4}-\d{2}-\d{2}$/.test(endDate)) {
+          setProjectModal((prev) => (prev ? Object.assign({}, prev, { error: '请选择开始和结束日期' }) : prev));
+          return;
+        }
+        if (endDate < startDate) {
+          setProjectModal((prev) => (prev ? Object.assign({}, prev, { error: '结束日期不能早于开始日期' }) : prev));
+          return;
+        }
+        setProjectBusy(true);
+        try {
+          const editing = projectModal.mode === 'edit' && projectModal.id;
+          const res = await api(editing ? '/calendar/api/project-update' : '/calendar/api/project-create', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(
+              editing
+                ? { id: projectModal.id, name, icon: projectModal.icon, startDate, endDate }
+                : { name, icon: projectModal.icon, startDate, endDate },
+            ),
+          });
+          setProjectModal(null);
+          await loadProjects();
+          if (editing) {
+            await loadMyTasks();
+            showNotice('已保存项目「' + res.project.name + '」', 'success');
+          } else {
+            setProjectId(res.project.id);
+            setTaskCategoryId(null);
+            showNotice('已创建项目「' + res.project.name + '」', 'success');
+          }
+        } catch (error) {
+          setProjectModal((prev) => (prev ? Object.assign({}, prev, { error: error.message }) : prev));
+        } finally {
+          setProjectBusy(false);
+        }
+      };
+
+      const selectProject = (project) => {
+        setProjectId((prev) => (String(prev) === String(project.id) ? null : project.id));
+        setTaskCategoryId(null);
+        setActiveView('tasks');
+      };
+
+      const openProjectMenu = (event, project) => {
+        event.preventDefault();
+        const width = 184;
+        const viewportW = window.innerWidth || 1200;
+        const viewportH = window.innerHeight || 800;
+        setProjectMenu({
+          project,
+          x: Math.min(event.clientX, Math.max(8, viewportW - width - 8)),
+          y: Math.min(event.clientY, Math.max(8, viewportH - 176)),
+        });
+      };
+
+      const archiveProject = async (project) => {
+        setProjectMenu(null);
+        if (projectBusy) return;
+        setProjectBusy(true);
+        try {
+          const res = await api('/calendar/api/project-archive', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: project.id, archived: !project.archived }),
+          });
+          if (res.project.archived) setProjectArchivedOpen(true);
+          if (res.project.archived && String(projectId) === String(project.id)) setProjectId(null);
+          await loadProjects();
+          showNotice(res.project.archived ? '已归档项目「' + res.project.name + '」' : '已取消归档「' + res.project.name + '」', 'success');
+        } catch (error) {
+          showNotice(error.message);
+        } finally {
+          setProjectBusy(false);
+        }
+      };
+
+      const deleteProject = async (project) => {
+        setProjectMenu(null);
+        const message = '删除项目「' + project.name + '」？项目里的 ' + (Number(project.taskCount) || 0) + ' 个任务会保留，但不再属于任何项目。';
+        if (!window.confirm(message)) return;
+        setProjectBusy(true);
+        try {
+          await api('/calendar/api/project-delete', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: project.id }),
+          });
+          if (String(projectId) === String(project.id)) setProjectId(null);
+          await loadProjects();
+          await loadMyTasks();
+          showNotice('已删除项目', 'success');
+        } catch (error) {
+          showNotice(error.message);
+        } finally {
+          setProjectBusy(false);
         }
       };
 
@@ -2500,9 +2874,8 @@ window.__ModuleLoader__.load({
         }
       };
 
-      const deleteTask = async (task) => {
-        if (!task) return;
-        if (!window.confirm('删除任务「' + task.title + '」？删除后不可恢复。')) return;
+      const deleteTaskNow = async (task, noticeText) => {
+        if (!task) return false;
         setCalendarStatusMenu((prev) => (prev ? Object.assign({}, prev, { busy: 'delete', error: '' }) : prev));
         try {
           await api('/calendar/api/task-delete', {
@@ -2524,11 +2897,71 @@ window.__ModuleLoader__.load({
             setMatrixDetailOpen(false);
           }
           if (pomoTimer && String(pomoTimer.taskId) === String(task.id)) setPomoTimer(null);
-          loadMyTasks();
+          await loadMyTasks();
           loadCategories();
-          showNotice('已删除任务', 'success');
+          showNotice(noticeText || '已删除任务', 'success');
+          return true;
         } catch (error) {
           setCalendarStatusMenu((prev) => (prev ? Object.assign({}, prev, { busy: '', error: error.message }) : prev));
+          showNotice(error.message);
+          return false;
+        }
+      };
+
+      const deleteTask = async (task) => {
+        if (!task) return;
+        if (!window.confirm('删除任务「' + task.title + '」？删除后不可恢复。')) return;
+        await deleteTaskNow(task);
+      };
+
+      const requestSeriesAction = (task, mode) => {
+        if (!task) return;
+        setCalendarStatusMenu(null);
+        setSeriesPrompt({ task, mode, busy: false, error: '' });
+      };
+
+      const confirmSeriesAction = async (scope) => {
+        const prompt = seriesPrompt;
+        if (!prompt || prompt.busy) return;
+        setSeriesPrompt((prev) => (prev ? Object.assign({}, prev, { busy: true, error: '' }) : prev));
+        const task = prompt.task;
+        try {
+          if (scope === 'future') {
+            const res = await api('/calendar/api/series-action', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ id: task.id, action: prompt.mode, scope: 'future' }),
+            });
+            setSeriesPrompt(null);
+            if (String(dayTaskId) === String(task.id)) {
+              setDayTaskId(null);
+              setDayDetail(null);
+              setMatrixDetailOpen(false);
+            }
+            if (pomoTimer && String(pomoTimer.taskId) === String(task.id)) setPomoTimer(null);
+            await loadMyTasks();
+            loadCategories();
+            showNotice(
+              (prompt.mode === 'drop' ? '已放弃 ' : '已删除 ') + (Number(res.affected) || 0) + ' 个重复任务',
+              'success',
+            );
+          } else if (prompt.mode === 'delete') {
+            const ok = await deleteTaskNow(task, '已删除本次任务');
+            if (ok) setSeriesPrompt(null);
+            else setSeriesPrompt((prev) => (prev ? Object.assign({}, prev, { busy: false }) : prev));
+          } else {
+            await postTaskStatus(task.id, 'dropped');
+            setSeriesPrompt(null);
+            if (String(dayTaskId) === String(task.id)) {
+              setDayTaskId(null);
+              setDayDetail(null);
+              setMatrixDetailOpen(false);
+            }
+            await loadMyTasks();
+            showNotice('已放弃本次任务', 'success');
+          }
+        } catch (error) {
+          setSeriesPrompt((prev) => (prev ? Object.assign({}, prev, { busy: false, error: error.message }) : prev));
         }
       };
 
@@ -2547,6 +2980,13 @@ window.__ModuleLoader__.load({
           dayView: !!preset.dayView,
           quadrant: preset.quadrant || null,
           quadrantLabel: preset.quadrantLabel || '',
+          status: preset.status || 'wait',
+          statusLabel: preset.statusLabel || '',
+          projectId: preset.projectId || (activeView === 'tasks' ? projectId : null),
+          estimate: null,
+          recurrence: '',
+          recurrenceWeekday: null,
+          recurrenceLabel: '',
           categoryId: preset.categoryId
             ? String(preset.categoryId)
             : taskCategoryId === 'none'
@@ -2563,62 +3003,197 @@ window.__ModuleLoader__.load({
         });
       };
 
+      const applyModalNaturalLanguage = () => {
+        setTaskModal((prev) => {
+          if (!prev || prev.tab === 'batch') return prev;
+          const raw = String(prev.title || '').trim();
+          if (!raw) return prev;
+          const parsed = parseTaskNaturalInput(raw, todayKey());
+          if (!parsed.date && parsed.startTime == null && !parsed.recurrence) return prev;
+          const deadline = parsed.date || prev.deadline;
+          return Object.assign({}, prev, {
+            title: parsed.title,
+            deadline,
+            date: deadline,
+            startTime: parsed.startTime != null ? parsed.startTime : prev.startTime,
+            estimate: parsed.startTime != null ? 0.5 : prev.estimate,
+            recurrence: parsed.recurrence || '',
+            recurrenceWeekday: parsed.recurrenceWeekday,
+            recurrenceLabel: parsed.recurrenceLabel || '',
+          });
+        });
+      };
+
       const submitTaskModal = async () => {
         if (!taskModal || taskModal.saving) return;
-        const deadline = String(taskModal.deadline || '');
-        if (!/^\d{4}-\d{2}-\d{2}$/.test(deadline)) {
+        const modalDeadline = String(taskModal.deadline || '');
+        const singleParsed =
+          taskModal.tab === 'batch'
+            ? null
+            : parseTaskNaturalInput(String(taskModal.title || '').trim(), todayKey());
+        const singleTitle = singleParsed ? String(singleParsed.title || '').trim() : '';
+        const singleDeadline = singleParsed && singleParsed.date ? singleParsed.date : modalDeadline;
+        const singleStart =
+          singleParsed && singleParsed.startTime != null ? singleParsed.startTime : taskModal.startTime;
+        const singleEstimate =
+          singleParsed && singleParsed.startTime != null
+            ? 0.5
+            : taskModal.estimate != null
+              ? taskModal.estimate
+              : undefined;
+        const singleRecurrence = taskModal.recurrence || (singleParsed && singleParsed.recurrence) || '';
+        const singleRecurrenceWeekday =
+          taskModal.recurrenceWeekday != null ? taskModal.recurrenceWeekday : singleParsed ? singleParsed.recurrenceWeekday : null;
+        const singleRecurrenceLabel = taskModal.recurrenceLabel || (singleParsed && singleParsed.recurrenceLabel) || '';
+        const deadlineToCheck = taskModal.tab === 'batch' ? modalDeadline : singleDeadline;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(deadlineToCheck)) {
           setTaskModal((prev) => (prev ? Object.assign({}, prev, { error: '请选择截止日期' }) : prev));
+          return;
+        }
+        if (taskModal.tab !== 'batch' && !singleTitle) {
+          setTaskModal((prev) => (prev ? Object.assign({}, prev, { error: '请填写任务标题' }) : prev));
           return;
         }
         setTaskModal((prev) => (prev ? Object.assign({}, prev, { saving: true, error: '' }) : prev));
         try {
           if (taskModal.tab === 'batch') {
-            const rows = (taskModal.batchRows || []).filter((row) => String(row.title || '').trim());
+            const rows = (taskModal.batchRows || [])
+              .filter((row) => String(row.title || '').trim())
+              .map((row) => {
+                const parsed = parseTaskNaturalInput(row.title, todayKey());
+                return Object.assign({}, row, {
+                  title: parsed.title,
+                  deadline: parsed.date || row.deadline || modalDeadline,
+                  startTime: parsed.startTime != null ? parsed.startTime : row.startTime,
+                  recurrence: parsed.recurrence || row.recurrence || '',
+                  recurrenceWeekday: parsed.recurrenceWeekday != null ? parsed.recurrenceWeekday : row.recurrenceWeekday,
+                  recurrenceLabel: parsed.recurrenceLabel || row.recurrenceLabel || '',
+                });
+              });
             if (!rows.length) throw new Error('请先识别或填写任务标题');
+            const createdTimes = {};
+            let seriesCount = 0;
             for (const row of rows) {
-              await api('/calendar/api/task-create', {
+              if (row.recurrence) {
+                await api('/calendar/api/series-create', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({
+                    title: row.title,
+                    description: '',
+                    priority: row.priority || taskModal.priority,
+                    deadline: row.deadline || modalDeadline,
+                    startTime: row.startTime != null ? row.startTime : null,
+                    estimate: row.startTime != null ? 0.5 : undefined,
+                    status: taskModal.status || 'wait',
+                    rule: row.recurrence,
+                    weekday: row.recurrenceWeekday,
+                    categoryId: taskModal.categoryId ? Number(taskModal.categoryId) : null,
+                    projectId: taskModal.projectId || null,
+                  }),
+                });
+                seriesCount += 1;
+                continue;
+              }
+              const res = await api('/calendar/api/task-create', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({
                   title: row.title,
                   description: '',
                   priority: row.priority || taskModal.priority,
-                  deadline: row.deadline || deadline,
+                  deadline: row.deadline || modalDeadline,
+                  startTime: row.startTime != null ? row.startTime : null,
+                  estimate: row.startTime != null ? 0.5 : undefined,
+                  status: taskModal.status || 'wait',
                   quadrant: taskModal.quadrant || null,
                   categoryId: taskModal.categoryId ? Number(taskModal.categoryId) : null,
+                  projectId: taskModal.projectId || null,
                 }),
               });
+              if (row.startTime != null && res.task) createdTimes[String(res.task.id)] = Number(row.startTime);
+            }
+            if (Object.keys(createdTimes).length) {
+              setCalendarDayTimes((prev) => Object.assign({}, prev, createdTimes));
             }
             setTaskModal(null);
-            expandTaskGroups(rows.map((row) => row.deadline || deadline));
-            showNotice('已创建 ' + rows.length + ' 个任务', 'success');
+            expandTaskGroups(rows.map((row) => row.deadline || modalDeadline));
+            showNotice(
+              '已创建 ' + rows.length + ' 项任务' + (seriesCount ? '（含 ' + seriesCount + ' 组重复）' : ''),
+              'success',
+            );
+          } else if (singleRecurrence) {
+            await api('/calendar/api/series-create', {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({
+                title: singleTitle,
+                description: taskModal.description,
+                priority: taskModal.priority,
+                deadline: singleDeadline,
+                startTime: singleStart,
+                estimate: singleEstimate,
+                status: taskModal.status || 'wait',
+                rule: singleRecurrence,
+                weekday: singleRecurrenceWeekday,
+                categoryId: taskModal.categoryId ? Number(taskModal.categoryId) : null,
+                projectId: taskModal.projectId || null,
+              }),
+            });
+            setTaskModal(null);
+            expandTaskGroups([singleDeadline]);
+            await loadMyTasks();
+            loadCategories();
+            showNotice(
+              '已创建重复任务 · ' + (singleRecurrenceLabel || '重复') + (singleStart != null ? ' ' + clockText(singleStart) : ''),
+              'success',
+            );
           } else {
-            const title = String(taskModal.title || '').trim();
-            if (!title) throw new Error('请填写任务标题');
             const res = await api('/calendar/api/task-create', {
               method: 'POST',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify({
-                title,
+                title: singleTitle,
                 description: taskModal.description,
                 priority: taskModal.priority,
-                deadline,
-                startTime: taskModal.startTime,
+                deadline: singleDeadline,
+                startTime: singleStart,
+                estimate: singleEstimate,
+                status: taskModal.status || 'wait',
                 quadrant: taskModal.quadrant || null,
                 categoryId: taskModal.categoryId ? Number(taskModal.categoryId) : null,
+                projectId: taskModal.projectId || null,
               }),
             });
-            if (taskModal.quadrantLabel) showNotice('已添加到「' + taskModal.quadrantLabel + '」', 'success');
-            if (taskModal.startTime !== null && taskModal.startTime !== undefined) {
-              setCalendarDayTimes((prev) => Object.assign({}, prev, { [String(res.task.id)]: Number(taskModal.startTime) }));
+            const notices = [];
+            if (taskModal.statusLabel) notices.push('已添加到「' + taskModal.statusLabel + '」');
+            if (singleParsed && (singleParsed.date || singleParsed.startTime != null)) {
+              notices.push(
+                '日期 ' + shortDateLabel(singleDeadline) + (singleStart != null ? ' ' + clockText(singleStart) : ''),
+              );
+            }
+            if (notices.length) {
+              showNotice(notices.join(' · '), 'success');
+            } else if (taskModal.quadrantLabel) {
+              showNotice('已添加到「' + taskModal.quadrantLabel + '」', 'success');
+            }
+            if (singleStart !== null && singleStart !== undefined) {
+              setCalendarDayTimes((prev) => Object.assign({}, prev, { [String(res.task.id)]: Number(singleStart) }));
             }
             setTaskModal(null);
-            expandTaskGroups([deadline]);
+            expandTaskGroups([singleDeadline]);
             if (taskModal.dayView) {
               setCalendarMode('day');
-              setSelectedDate(deadline);
+              setSelectedDate(singleDeadline);
               setDayTaskId(res.task.id);
-              setDayDetail({ loading: false, task: res.task, descDraft: res.task.description || '', busy: '', error: '', message: '' });
+              setDayDetail({
+                loading: false,
+                task: res.task,
+                descDraft: res.task.description || '',
+                busy: '',
+                error: '',
+                message: '',
+              });
             }
           }
           loadMyTasks();
@@ -2638,12 +3213,19 @@ window.__ModuleLoader__.load({
         setTaskModal((prev) =>
           prev
             ? Object.assign({}, prev, {
-                batchRows: lines.map((line, index) => ({
-                  key: 'b' + index,
-                  title: line,
-                  deadline: prev.deadline,
-                  priority: prev.priority,
-                })),
+                batchRows: lines.map((line, index) => {
+                  const parsed = parseTaskNaturalInput(line, todayKey());
+                  return {
+                    key: 'b' + index,
+                    title: parsed.title,
+                    deadline: parsed.date || prev.deadline,
+                    startTime: parsed.startTime,
+                    priority: prev.priority,
+                    recurrence: parsed.recurrence || '',
+                    recurrenceWeekday: parsed.recurrenceWeekday,
+                    recurrenceLabel: parsed.recurrenceLabel || '',
+                  };
+                }),
               })
             : prev,
         );
@@ -2709,7 +3291,10 @@ window.__ModuleLoader__.load({
                       (blocked ? ' lc-popup-item-disabled' : ''),
                     disabled: !!calendarStatusMenu.busy || active || blocked,
                     title: blocked ? '已完成的任务不能放弃' : '',
-                    onClick: () => applyCalendarStatus(option),
+                    onClick: () =>
+                      calendarStatusMenu.task.seriesId
+                        ? requestSeriesAction(calendarStatusMenu.task, 'drop')
+                        : applyCalendarStatus(option),
                   },
                   option.label,
                 );
@@ -2722,10 +3307,84 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 className: 'lc-popup-item lc-popup-item-danger',
                 disabled: !!calendarStatusMenu.busy,
-                onClick: () => deleteTask(calendarStatusMenu.task),
+                onClick: () =>
+                  calendarStatusMenu.task.seriesId
+                    ? requestSeriesAction(calendarStatusMenu.task, 'delete')
+                    : deleteTask(calendarStatusMenu.task),
               },
               h('span', { className: 'lc-popup-item-icon' }, h(GlyphIcon, { name: 'trash', size: 15 })),
               h('span', null, '删除'),
+            ),
+          ),
+        );
+      };
+
+      const renderSeriesPrompt = () => {
+        if (!seriesPrompt) return null;
+        const task = seriesPrompt.task || {};
+        const isDelete = seriesPrompt.mode === 'delete';
+        const verb = isDelete ? '删除' : '放弃';
+        return h(
+          'div',
+          {
+            className: 'lc-series-mask',
+            onClick: () => {
+              if (!seriesPrompt.busy) setSeriesPrompt(null);
+            },
+          },
+          h(
+            'div',
+            {
+              className: 'lc-series-dialog',
+              role: 'dialog',
+              'aria-modal': 'true',
+              'aria-label': '重复任务操作',
+              onClick: (event) => event.stopPropagation(),
+            },
+            h('div', { className: 'lc-series-title' }, '这是重复任务'),
+            h('div', { className: 'lc-series-task', title: task.title }, task.title),
+            task.seriesLabel
+              ? h('div', { className: 'lc-series-rule' }, h(GlyphIcon, { name: 'repeat', size: 13 }), task.seriesLabel)
+              : null,
+            h(
+              'p',
+              { className: 'lc-series-copy' },
+              '只处理 ' + (task.deadline ? shortDateLabel(task.deadline) : '这一次') + '，还是把以后的所有重复任务一起' + verb + '？',
+            ),
+            seriesPrompt.error ? h('div', { className: 'lc-series-error' }, seriesPrompt.error) : null,
+            h(
+              'div',
+              { className: 'lc-series-actions' },
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'lc-btn lc-btn-ghost',
+                  disabled: seriesPrompt.busy,
+                  onClick: () => setSeriesPrompt(null),
+                },
+                '取消',
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'lc-btn',
+                  disabled: seriesPrompt.busy,
+                  onClick: () => confirmSeriesAction('one'),
+                },
+                '仅这一次',
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'lc-btn lc-btn-primary',
+                  disabled: seriesPrompt.busy,
+                  onClick: () => confirmSeriesAction('future'),
+                },
+                '这一次和以后',
+              ),
             ),
           ),
         );
@@ -4287,6 +4946,185 @@ window.__ModuleLoader__.load({
           h('span', { className: 'lc-field-label-text' }, text),
         );
 
+      const renderProjectModal = () => {
+        if (!projectModal) return null;
+        const setField = (patch) => setProjectModal((prev) => (prev ? Object.assign({}, prev, patch) : prev));
+        const close = () => setProjectModal(null);
+        return h(
+          'dialog',
+          {
+            className: 'lc-modal-dialog lc-project-dialog',
+            ref: projectDialogRef,
+            'aria-label': projectModal.mode === 'edit' ? '编辑项目' : '新增项目',
+            onCancel: (event) => {
+              event.preventDefault();
+              close();
+            },
+          },
+          h(
+            'form',
+            {
+              className: 'lc-modal lc-project-modal',
+              onSubmit: (event) => {
+                event.preventDefault();
+                submitProject();
+              },
+            },
+            h(
+              'div',
+              { className: 'lc-modal-head' },
+              h('span', { className: 'lc-modal-title' }, projectModal.mode === 'edit' ? '编辑项目' : '新增项目'),
+              h(
+                'button',
+                { className: 'lc-modal-close', type: 'button', title: '关闭', 'aria-label': '关闭', onClick: close },
+                h(GlyphIcon, { name: 'close', size: 16 }),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'lc-modal-body lc-project-form' },
+              h(
+                'label',
+                { className: 'lc-field' },
+                h('span', { className: 'lc-field-label' }, '项目名称'),
+                h('input', {
+                  className: 'lc-input',
+                  type: 'text',
+                  value: projectModal.name,
+                  maxLength: 40,
+                  autoFocus: true,
+                  placeholder: '例如：新版官网',
+                  onChange: (event) => setField({ name: event.target.value }),
+                }),
+              ),
+              h(
+                'div',
+                { className: 'lc-field' },
+                h('span', { className: 'lc-field-label' }, '项目图标'),
+                h(
+                  'div',
+                  { className: 'lc-project-icons' },
+                  PROJECT_ICONS.map((icon) =>
+                    h(
+                      'button',
+                      {
+                        key: icon,
+                        type: 'button',
+                        className: 'lc-project-icon-option' + (projectModal.icon === icon ? ' is-active' : ''),
+                        'aria-label': '选择 ' + icon,
+                        'aria-pressed': projectModal.icon === icon ? 'true' : 'false',
+                        onClick: () => setField({ icon }),
+                      },
+                      icon,
+                    ),
+                  ),
+                ),
+              ),
+              h(
+                'div',
+                { className: 'lc-project-dates' },
+                h(
+                  'label',
+                  { className: 'lc-field' },
+                  h('span', { className: 'lc-field-label' }, '开始日期'),
+                  h('input', {
+                    className: 'lc-input',
+                    type: 'date',
+                    value: projectModal.startDate,
+                    onChange: (event) => setField({ startDate: event.target.value }),
+                  }),
+                ),
+                h(
+                  'label',
+                  { className: 'lc-field' },
+                  h('span', { className: 'lc-field-label' }, '结束日期'),
+                  h('input', {
+                    className: 'lc-input',
+                    type: 'date',
+                    value: projectModal.endDate,
+                    onChange: (event) => setField({ endDate: event.target.value }),
+                  }),
+                ),
+              ),
+              projectModal.error ? h('div', { className: 'lc-project-error' }, projectModal.error) : null,
+            ),
+            h(
+              'div',
+              { className: 'lc-modal-foot' },
+              h('button', { type: 'button', className: 'lc-btn', onClick: close }, '取消'),
+              h(
+                'button',
+                { type: 'submit', className: 'lc-btn lc-btn-primary', disabled: projectBusy },
+                projectBusy ? (projectModal.mode === 'edit' ? '保存中…' : '创建中…') : projectModal.mode === 'edit' ? '保存' : '创建项目',
+              ),
+            ),
+          ),
+        );
+      };
+
+      const renderProjectMenu = () => {
+        if (!projectMenu) return null;
+        const width = 184;
+        const estimated = 154;
+        const viewportW = window.innerWidth || 1200;
+        const viewportH = window.innerHeight || 800;
+        const left = clamp(projectMenu.x, 8, Math.max(8, viewportW - width - 8));
+        const top = clamp(projectMenu.y, 8, Math.max(8, viewportH - estimated - 8));
+        const project = projectMenu.project;
+        return h(
+          'div',
+          { className: 'lc-popup-layer', onClick: () => setProjectMenu(null) },
+          h(
+            'div',
+            {
+              className: 'lc-popup lc-project-menu',
+              style: { left: left + 'px', top: top + 'px', width: width + 'px' },
+              role: 'menu',
+              'aria-label': '项目操作',
+              onClick: (event) => event.stopPropagation(),
+            },
+            h('div', { className: 'lc-popup-head' }, project.name),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'lc-popup-item',
+                role: 'menuitem',
+                disabled: !!projectBusy,
+                onClick: () => openProjectModal(project),
+              },
+              h('span', { className: 'lc-popup-item-icon' }, h(GlyphIcon, { name: 'edit', size: 15 })),
+              h('span', null, '编辑项目'),
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'lc-popup-item',
+                role: 'menuitem',
+                disabled: !!projectBusy,
+                onClick: () => archiveProject(project),
+              },
+              h('span', { className: 'lc-popup-item-icon' }, h(GlyphIcon, { name: 'archive', size: 15 })),
+              h('span', null, project.archived ? '取消归档' : '归档项目'),
+            ),
+            h('div', { className: 'lc-popup-sep' }),
+            h(
+              'button',
+              {
+                type: 'button',
+                className: 'lc-popup-item lc-popup-item-danger',
+                role: 'menuitem',
+                disabled: !!projectBusy,
+                onClick: () => deleteProject(project),
+              },
+              h('span', { className: 'lc-popup-item-icon' }, h(GlyphIcon, { name: 'trash', size: 15 })),
+              h('span', null, '删除项目'),
+            ),
+          ),
+        );
+      };
+
       const renderTaskModal = () => {
         if (!taskModal) return null;
         const single = taskModal.tab !== 'batch';
@@ -4344,8 +5182,12 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'lc-modal-body' },
-              taskModal.quadrantLabel
-                ? h('div', { className: 'lc-modal-target' }, '将添加到「' + taskModal.quadrantLabel + '」')
+              taskModal.statusLabel || taskModal.quadrantLabel
+                ? h(
+                    'div',
+                    { className: 'lc-modal-target' },
+                    '将添加到「' + (taskModal.statusLabel || taskModal.quadrantLabel) + '」',
+                  )
                 : null,
               single
                 ? h(
@@ -4360,10 +5202,36 @@ window.__ModuleLoader__.load({
                         value: taskModal.title,
                         maxLength: 300,
                         autoFocus: true,
-                        placeholder: '例如：整理本周需求优先级',
+                        placeholder: '例如：明天上午9点开会',
+                        onBlur: applyModalNaturalLanguage,
                         onChange: (event) =>
                           setTaskModal((prev) => (prev ? Object.assign({}, prev, { title: event.target.value }) : prev)),
                       }),
+                      h(
+                        'span',
+                        { className: 'lc-field-hint' },
+                        '可直接写日期、时间和重复规则，如「每个工作日上午9点开会」，离开输入框时自动拆分',
+                      ),
+                      taskModal.recurrenceLabel
+                        ? h(
+                            'div',
+                            { className: 'lc-modal-repeat' },
+                            h(GlyphIcon, { name: 'repeat', size: 13 }),
+                            h('span', null, '重复：' + taskModal.recurrenceLabel),
+                            h(
+                              'button',
+                              {
+                                type: 'button',
+                                className: 'lc-modal-repeat-clear',
+                                onClick: () =>
+                                  setTaskModal((prev) =>
+                                    prev ? Object.assign({}, prev, { recurrence: '', recurrenceWeekday: null, recurrenceLabel: '' }) : prev,
+                                  ),
+                              },
+                              '取消重复',
+                            ),
+                          )
+                        : null,
                     ),
                     h(
                       'div',
@@ -4419,27 +5287,34 @@ window.__ModuleLoader__.load({
                         }),
                       ),
                     ),
-                    taskModal.startTime !== null && taskModal.startTime !== undefined
-                      ? h(
-                          'label',
-                          { className: 'lc-field' },
-                          fieldLabel('开始时间', false),
-                          h('input', {
-                            className: 'lc-input',
-                            type: 'time',
-                            step: 900,
-                            value: clockText(taskModal.startTime),
-                            onChange: (event) => {
-                              const value = String(event.target.value || '');
-                              const parts = value.split(':');
-                              if (parts.length !== 2) return;
-                              const minutes = Number(parts[0]) * 60 + Number(parts[1]);
-                              setTaskModal((prev) => (prev ? Object.assign({}, prev, { startTime: minutes }) : prev));
-                            },
-                          }),
-                          h('span', { className: 'lc-field-hint' }, '日视图按这里的时间排'),
-                        )
-                      : null,
+                    h(
+                      'label',
+                      { className: 'lc-field' },
+                      fieldLabel('开始时间', false),
+                      h('input', {
+                        className: 'lc-input',
+                        type: 'time',
+                        step: 900,
+                        value:
+                          taskModal.startTime !== null && taskModal.startTime !== undefined
+                            ? clockText(taskModal.startTime)
+                            : '',
+                        onChange: (event) => {
+                          const value = String(event.target.value || '');
+                          if (!value) {
+                            setTaskModal((prev) =>
+                              prev ? Object.assign({}, prev, { startTime: null, estimate: null }) : prev,
+                            );
+                            return;
+                          }
+                          const parts = value.split(':');
+                          if (parts.length !== 2) return;
+                          const minutes = Number(parts[0]) * 60 + Number(parts[1]);
+                          setTaskModal((prev) => (prev ? Object.assign({}, prev, { startTime: minutes }) : prev));
+                        },
+                      }),
+                      h('span', { className: 'lc-field-hint' }, '可选；日视图按这里的时间排'),
+                    ),
                     h(
                       'label',
                       { className: 'lc-field' },
@@ -4473,7 +5348,7 @@ window.__ModuleLoader__.load({
                     h(
                       'div',
                       { className: 'lc-batch-toolbar' },
-                      h('span', { className: 'lc-batch-hint' }, '识别后可逐条调整日期'),
+                      h('span', { className: 'lc-batch-hint' }, '每行可写日期和时间，识别后可逐条调整日期'),
                       h(
                         'label',
                         { className: 'lc-batch-cat' },
@@ -4524,6 +5399,12 @@ window.__ModuleLoader__.load({
                                   },
                                 },
                               ),
+                              row.startTime != null
+                                ? h('span', { className: 'lc-batch-time' }, clockText(row.startTime))
+                                : null,
+                              row.recurrenceLabel
+                                ? h('span', { className: 'lc-batch-repeat', title: '重复任务' }, '↻ ' + row.recurrenceLabel)
+                                : null,
                               h('input', {
                                 className: 'lc-input lc-batch-date',
                                 type: 'date',
@@ -4685,7 +5566,6 @@ window.__ModuleLoader__.load({
         const matches = (task, filter) => {
           if (filter === 'done') return Boolean(task.done);
           if (filter === 'today') return task.deadline === today;
-          if (task.done) return false;
           if (filter === 'tomorrow') return task.deadline === tomorrow;
           if (filter === 'next7') return task.deadline >= today && task.deadline <= weekEnd;
           return true;
@@ -4698,6 +5578,10 @@ window.__ModuleLoader__.load({
               (filter === 'done' || (!task.done && !isDroppedStatus(task.status))),
           ).length;
         const currentFilter = TASK_FILTERS.find((item) => item.key === taskFilter) || TASK_FILTERS[0];
+        const selectedProject = projectId
+          ? projects.find((project) => String(project.id) === String(projectId)) || null
+          : null;
+        const isProjectView = Boolean(selectedProject);
         const selectedCategory =
           taskCategoryId && taskCategoryId !== 'none'
             ? categories.find((category) => String(category.id) === String(taskCategoryId)) || null
@@ -4708,7 +5592,9 @@ window.__ModuleLoader__.load({
           if (taskCategoryId === 'none') return !task.categoryId;
           return String(task.categoryId || '') === String(taskCategoryId);
         };
-        const baseVisible = allTasks.filter((task) => matches(task, currentFilter.key));
+        const baseVisible = allTasks.filter((task) =>
+          isProjectView ? String(task.projectId || '') === String(selectedProject.id) : matches(task, currentFilter.key),
+        );
         const categoryCount = (key) =>
           baseVisible.filter((task) => {
             if (key === 'none') return !task.categoryId;
@@ -4724,10 +5610,54 @@ window.__ModuleLoader__.load({
             if (byPriority) return byPriority;
             return Number(a.id) - Number(b.id);
           });
+        const projectOpenCount = isProjectView
+          ? allTasks.filter(
+              (task) =>
+                String(task.projectId || '') === String(selectedProject.id) &&
+                !task.done &&
+                !isDroppedStatus(task.status),
+            ).length
+          : 0;
+        const projectDoneCount = isProjectView
+          ? allTasks.filter(
+              (task) => String(task.projectId || '') === String(selectedProject.id) && task.done,
+            ).length
+          : 0;
         const openCount = allTasks.filter((task) => !task.done && !isDroppedStatus(task.status)).length;
         const todayCount = allTasks.filter(
           (task) => !task.done && !isDroppedStatus(task.status) && task.deadline === today,
         ).length;
+        const projectLeft = selectedProject ? projectDaysLeft(selectedProject.endDate) : null;
+        const projectProgress = selectedProject
+          ? projectProgressInfo(
+              selectedProject,
+              allTasks.filter((task) => String(task.projectId || '') === String(selectedProject.id)),
+              today,
+            )
+          : null;
+        const activeProjects = projects.filter((project) => !project.archived);
+        const archivedProjects = projects.filter((project) => project.archived);
+        const projectRow = (project) => {
+          const left = projectDaysLeft(project.endDate);
+          return h(
+            'button',
+            {
+              key: project.id,
+              type: 'button',
+              className:
+                'lc-task-side-item lc-project-item' +
+                (String(projectId) === String(project.id) ? ' lc-task-side-item-active' : '') +
+                (left.days !== null && left.days < 0 ? ' lc-project-item-over' : '') +
+                (project.archived ? ' lc-project-item-archived' : ''),
+              title: project.name + ' · 截止 ' + projectDateText(project.endDate) + (project.archived ? ' · 已归档' : ''),
+              onClick: () => selectProject(project),
+              onContextMenu: (event) => openProjectMenu(event, project),
+            },
+            h('span', { className: 'lc-project-icon', 'aria-hidden': 'true' }, project.icon || '📁'),
+            h('span', { className: 'lc-task-side-label lc-project-name' }, project.name),
+            h('span', { className: 'lc-project-deadline' }, projectDateText(project.endDate).slice(5)),
+          );
+        };
         const groups = [];
         const groupIndex = new Map();
         const activeVisible = visible.filter(
@@ -4743,7 +5673,7 @@ window.__ModuleLoader__.load({
           }
           groups[groupIndex.get(label)].tasks.push(task);
         }
-        // 今天视图保留刚完成的任务，单独收进「已完成」组，避免勾选后直接从列表消失。
+        // 各清单保留刚完成的任务，单独收进「已完成」组，避免勾选后直接从列表消失。
         if (doneVisible.length && currentFilter.key !== 'done') {
           groups.push({ label: '已完成', dateKey: '__done__', tasks: doneVisible, done: true });
         }
@@ -4756,11 +5686,10 @@ window.__ModuleLoader__.load({
           if (event.nativeEvent && event.nativeEvent.isComposing) return;
           const rawTitle = quickTitle.trim();
           if (!rawTitle || quickSaving) return;
-          const parsed = parseTaskDateText(rawTitle, today);
-          const timeParsed = parseTaskTimeText(parsed.title);
-          const title = timeParsed.title;
-          const startTime = timeParsed.startTime;
-          const deadline = parsed.date || (currentFilter.key === 'tomorrow' ? tomorrow : today);
+          const parsed = parseTaskNaturalInput(rawTitle, today);
+          const title = parsed.title;
+          const startTime = parsed.startTime;
+          const deadline = parsed.date || (isProjectView ? today : currentFilter.key === 'tomorrow' ? tomorrow : today);
           setQuickSaving(true);
           try {
             const quickCategory =
@@ -4776,10 +5705,33 @@ window.__ModuleLoader__.load({
               priority: 3,
               deadline,
               categoryId: quickCategory,
+              projectId: selectedProject ? selectedProject.id : null,
             };
             if (startTime != null) {
               payload.startTime = startTime;
               payload.estimate = 0.5;
+            }
+            if (parsed.recurrence) {
+              const seriesRes = await api('/calendar/api/series-create', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(
+                  Object.assign({}, payload, {
+                    rule: parsed.recurrence,
+                    weekday: parsed.recurrenceWeekday,
+                    status: 'wait',
+                  }),
+                ),
+              });
+              setQuickTitle('');
+              await loadMyTasks();
+              loadCategories();
+              loadProjects();
+              showNotice(
+                '已创建重复任务 · ' + parsed.recurrenceLabel + (startTime != null ? ' ' + clockText(startTime) : ''),
+                'success',
+              );
+              return;
             }
             const res = await api('/calendar/api/task-create', {
               method: 'POST',
@@ -4793,6 +5745,7 @@ window.__ModuleLoader__.load({
             }
             await loadMyTasks();
             loadCategories();
+            loadProjects();
             if (res.task) loadDayTaskDetail(res.task.id, res.task);
             if (parsed.date) {
               showNotice('已创建到 ' + shortDate(deadline) + (startTime != null ? ' ' + clockText(startTime) : ''), 'success');
@@ -4888,6 +5841,13 @@ window.__ModuleLoader__.load({
                   onChange: () => completeTask(task),
                 }),
             h('div', { className: 'lc-task-row-title', title: task.title }, task.title),
+            task.seriesId
+              ? h(
+                  'span',
+                  { className: 'lc-task-repeat', title: task.seriesLabel || '重复任务' },
+                  h(GlyphIcon, { name: 'repeat', size: 12 }),
+                )
+              : null,
             h(TomatoMarks, { count: task.pomodoroCount, max: 4 }),
             h(
               'div',
@@ -4910,14 +5870,42 @@ window.__ModuleLoader__.load({
             h(
               'div',
               { className: 'lc-task-top-main' },
-              h('div', { className: 'lc-task-top-title' }, '任务'),
-              h('div', { className: 'lc-task-top-sub' }, currentFilter.label + (categoryLabel ? ' · ' + categoryLabel : ' · 按日期整理')),
+              h(
+                'div',
+                { className: 'lc-task-top-title' },
+                isProjectView
+                  ? h(
+                      React.Fragment,
+                      null,
+                      h('span', { className: 'lc-task-top-name' }, (selectedProject.icon || '📁') + ' ' + selectedProject.name),
+                      selectedProject.archived ? h('span', { className: 'lc-task-top-archived' }, '已归档') : null,
+                    )
+                  : '任务',
+              ),
+              h(
+                'div',
+                { className: 'lc-task-top-sub' },
+                isProjectView
+                  ? '项目任务' + (categoryLabel ? ' · ' + categoryLabel : ' · 按日期整理')
+                  : currentFilter.label + (categoryLabel ? ' · ' + categoryLabel : ' · 按日期整理'),
+              ),
             ),
             h(
               'div',
               { className: 'lc-task-top-stats' },
-              h('span', null, h('b', null, String(openCount)), '未完成'),
-              h('span', null, h('b', null, String(todayCount)), '今天'),
+              isProjectView
+                ? h(
+                    React.Fragment,
+                    null,
+                    h('span', null, h('b', null, String(projectOpenCount)), '未完成'),
+                    h('span', null, h('b', null, String(projectDoneCount)), '已完成'),
+                  )
+                : h(
+                    React.Fragment,
+                    null,
+                    h('span', null, h('b', null, String(openCount)), '未完成'),
+                    h('span', null, h('b', null, String(todayCount)), '今天'),
+                  ),
             ),
           ),
           h(
@@ -4940,14 +5928,62 @@ window.__ModuleLoader__.load({
                   {
                     key: filter.key,
                     type: 'button',
-                    className: 'lc-task-side-item' + (filter.key === currentFilter.key ? ' lc-task-side-item-active' : ''),
-                    onClick: () => setTaskFilter(filter.key),
+                    className: 'lc-task-side-item' + (!isProjectView && filter.key === currentFilter.key ? ' lc-task-side-item-active' : ''),
+                    onClick: () => {
+                      setProjectId(null);
+                      setTaskFilter(filter.key);
+                    },
                   },
                   h('span', { className: 'lc-task-side-icon' }, h(GlyphIcon, { name: filter.icon, size: 16 })),
                   h('span', { className: 'lc-task-side-label' }, filter.label),
                   h('span', { className: 'lc-task-side-count' }, String(countFor(filter.key))),
                 ),
               ),
+            ),
+            h(
+              'div',
+              { className: 'lc-task-side-title lc-task-side-title-projects' },
+              h('span', null, '项目'),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'lc-project-add',
+                  title: '新增项目',
+                  'aria-label': '新增项目',
+                  onClick: () => openProjectModal(),
+                },
+                h(GlyphIcon, { name: 'plus', size: 14 }),
+              ),
+            ),
+            h(
+              'nav',
+              { className: 'lc-task-side-nav lc-project-nav' },
+              projectsLoading && !projects.length
+                ? h('div', { className: 'lc-project-empty' }, '加载中…')
+                : projectsError
+                  ? h('div', { className: 'lc-project-empty' }, projectsError)
+                  : activeProjects.length
+                    ? activeProjects.map(projectRow)
+                    : h('div', { className: 'lc-project-empty' }, archivedProjects.length ? '还没有进行中的项目' : '还没有项目'),
+              archivedProjects.length
+                ? h(
+                    React.Fragment,
+                    null,
+                    h(
+                      'button',
+                      {
+                        type: 'button',
+                        className: 'lc-project-archived-toggle' + (projectArchivedOpen ? ' is-open' : ''),
+                        'aria-expanded': projectArchivedOpen ? 'true' : 'false',
+                        onClick: () => setProjectArchivedOpen((prev) => !prev),
+                      },
+                      h(GlyphIcon, { name: projectArchivedOpen ? 'chevron-down' : 'chevron-right', size: 13 }),
+                      h('span', null, '已归档 ' + archivedProjects.length),
+                    ),
+                    projectArchivedOpen ? archivedProjects.map(projectRow) : null,
+                  )
+                : null,
             ),
             h('div', { className: 'lc-task-side-title lc-task-side-title-cats' }, '分类'),
             h(
@@ -5024,7 +6060,90 @@ window.__ModuleLoader__.load({
           h(
             'section',
             { className: 'lc-task-main' },
-            currentFilter.key === 'done'
+            isProjectView && projectProgress
+              ? h(
+                  'div',
+                  { className: 'lc-project-progress' + (selectedProject.archived ? ' is-archived' : '') },
+                  h(
+                    'div',
+                    { className: 'lc-project-progress-head' },
+                    h(
+                      'div',
+                      { className: 'lc-project-progress-name' },
+                      h('span', { className: 'lc-project-progress-icon' }, selectedProject.icon || '📁'),
+                      h('span', { className: 'lc-project-progress-title', title: selectedProject.name }, selectedProject.name),
+                    ),
+                    h(
+                      'span',
+                      { className: 'lc-project-progress-days' },
+                      selectedProject.archived ? '已归档' : projectLeft.text,
+                    ),
+                  ),
+                  h(
+                    'div',
+                    { className: 'lc-project-progress-dates' },
+                    h('span', null, '开始 ' + projectProgress.startText),
+                    h('span', null, '截止 ' + projectProgress.endText),
+                  ),
+                  h(
+                    'div',
+                    {
+                      className: 'lc-project-bar',
+                      role: 'img',
+                      'aria-label':
+                        '项目时间进度 ' +
+                        Math.round(projectProgress.timePct * 100) +
+                        '%，已过 ' +
+                        projectProgress.elapsed +
+                        ' 天，共 ' +
+                        projectProgress.span +
+                        ' 天',
+                    },
+                    h('span', {
+                      className: 'lc-project-bar-elapsed',
+                      style: { width: projectProgress.timePct * 100 + '%' },
+                    }),
+                    projectProgress.timePct > 0 && projectProgress.timePct < 1
+                      ? h('span', {
+                          className: 'lc-project-bar-today',
+                          style: { left: projectProgress.timePct * 100 + '%' },
+                          title: '今天',
+                        })
+                      : null,
+                  ),
+                  h(
+                    'div',
+                    { className: 'lc-project-progress-meta' },
+                    h(
+                      'span',
+                      null,
+                      projectProgress.timePct <= 0
+                        ? selectedProject.startDate > today
+                          ? '项目还未开始'
+                          : '今天开始 · 时间进度 0%'
+                        : '已过去 ' +
+                          projectProgress.elapsed +
+                          ' 天 · 时间进度 ' +
+                          Math.round(projectProgress.timePct * 100) +
+                          '%',
+                    ),
+                    h(
+                      'span',
+                      null,
+                      '已完成 ' +
+                        projectProgress.done +
+                        '/' +
+                        projectProgress.total +
+                        ' · ' +
+                        Math.round(projectProgress.rate * 100) +
+                        '%' +
+                        (projectProgress.overdue ? ' · 逾期 ' + projectProgress.overdue : ''),
+                    ),
+                  ),
+                  h('div', { className: 'lc-project-progress-note' }, projectProgress.note),
+                )
+              : null,
+            (currentFilter.key === 'done' && !isProjectView) || (isProjectView && selectedProject.archived)
               ? null
               : h(
                   'label',
@@ -5033,7 +6152,9 @@ window.__ModuleLoader__.load({
                   h('input', {
                     type: 'text',
                     value: quickTitle,
-                    placeholder: '添加任务，可带日期时间，如「明天上午9点开会」',
+                    placeholder: isProjectView
+                      ? '添加到「' + selectedProject.name + '」，可带日期时间'
+                      : '添加任务，可带日期时间，如「明天上午9点开会」',
                     disabled: quickSaving,
                     onChange: (event) => setQuickTitle(event.target.value),
                     onKeyDown: submitQuickTask,
@@ -5076,7 +6197,7 @@ window.__ModuleLoader__.load({
                     collapsed ? null : ordered.map((task) => renderRow(task, group.dateKey, ordered)),
                   );
                 })
-              : h('div', { className: 'lc-task-empty' }, myTasks.loading ? '加载中…' : currentFilter.key === 'done' ? '还没有已完成的任务' : categoryLabel ? '这个分类下没有任务' : '这个列表是空的，在上方输入任务标题并回车即可添加'),
+              : h('div', { className: 'lc-task-empty' }, myTasks.loading ? '加载中…' : isProjectView ? '项目里还没有任务，在上方输入任务标题并回车即可添加' : currentFilter.key === 'done' ? '还没有已完成的任务' : categoryLabel ? '这个分类下没有任务' : '这个列表是空的，在上方输入任务标题并回车即可添加'),
           ),
           h(
             'div',
@@ -6770,6 +7891,7 @@ window.__ModuleLoader__.load({
             'data-task-id': String(task.id),
             title: task.title,
             onClick: () => openBoardTask(task),
+            onContextMenu: (event) => openCalendarStatusMenu(event, task),
             onKeyDown: (event) => {
               if (event.key !== 'Enter' && event.key !== ' ') return;
               event.preventDefault();
@@ -6837,7 +7959,7 @@ window.__ModuleLoader__.load({
               h(
                 'div',
                 { className: 'lc-board-sub' },
-                '按状态分列 · 拖动卡片改变状态 · 已放弃任务不显示',
+                '按状态分列 · 拖动卡片改变状态 · 双击空白处新建 · 已放弃任务不显示',
               ),
             ),
             h(
@@ -6909,10 +8031,19 @@ window.__ModuleLoader__.load({
                   ),
                   h(
                     'div',
-                    { className: 'lc-board-list' },
+                    {
+                      className: 'lc-board-list',
+                      onDoubleClick: (event) => {
+                        if (event.target.closest('.lc-board-card')) return;
+                        openTaskModal(todayKey(), null, {
+                          status: column.key,
+                          statusLabel: column.label,
+                        });
+                      },
+                    },
                     grouped[column.key].length
                       ? grouped[column.key].map(renderBoardCard)
-                      : h('div', { className: 'lc-board-empty' }, column.empty),
+                      : h('div', { className: 'lc-board-empty' }, column.empty + ' · 双击空白处新建'),
                   ),
                 ),
               ),
@@ -7150,6 +8281,7 @@ window.__ModuleLoader__.load({
         const settingsSections = [
           { key: 'categories', label: '任务分类', icon: 'inbox' },
           { key: 'day-range', label: '日视图', icon: 'calendar' },
+          { key: 'default-view', label: '默认视图', icon: 'grid' },
           { key: 'local-calendar', label: '本机日历', icon: 'refresh' },
           { key: 'obsidian', label: 'Obsidian', icon: 'book' },
           { key: 'data', label: '数据位置', icon: 'settings' },
@@ -7161,7 +8293,7 @@ window.__ModuleLoader__.load({
             'div',
             { className: 'lc-settings-head' },
             h('h1', { className: 'lc-settings-title' }, '设置'),
-            h('p', { className: 'lc-settings-sub' }, '分类、日视图、本机日历与 Obsidian'),
+            h('p', { className: 'lc-settings-sub' }, '分类、日视图、默认视图、本机日历与 Obsidian'),
           ),
           h(
             'div',
@@ -7366,6 +8498,44 @@ window.__ModuleLoader__.load({
                 'p',
                 { className: 'lc-settings-note' },
                 '当前显示 ' + clockText(dayStartMin) + '–' + clockText(dayEndMin) + '。设置保存在本机数据库，只影响日视图的显示范围。',
+              ),
+            ),
+            h(
+              'section',
+              { className: 'lc-settings-card' },
+              h(
+                'div',
+                { className: 'lc-settings-card-head' },
+                h(
+                  'div',
+                  null,
+                  h('h2', { className: 'lc-settings-card-title' }, '默认视图'),
+                  h('p', { className: 'lc-settings-card-sub' }, '打开插件时默认展示哪个页面'),
+                ),
+              ),
+              h(
+                'div',
+                { className: 'lc-default-view-grid' },
+                DEFAULT_VIEW_OPTIONS.map((option) =>
+                  h(
+                    'button',
+                    {
+                      key: option.key,
+                      type: 'button',
+                      className: 'lc-default-view-option' + (defaultView === option.key ? ' is-active' : ''),
+                      'aria-pressed': defaultView === option.key ? 'true' : 'false',
+                      disabled: Boolean(defaultViewBusy),
+                      onClick: () => void changeDefaultView(option.key),
+                    },
+                    h(GlyphIcon, { name: option.icon, size: 18 }),
+                    h('span', null, option.label),
+                  ),
+                ),
+              ),
+              h(
+                'p',
+                { className: 'lc-settings-note' },
+                '下次打开插件时生效；当前页面不会自动切换。设置保存在本机数据库。',
               ),
             ),
             h(
@@ -7765,11 +8935,14 @@ window.__ModuleLoader__.load({
                   : renderPomodoroPage(),
         ),
         matrixDetailOpen && dayTaskId ? renderMatrixDetailModal() : null,
+        projectModal ? renderProjectModal() : null,
+        projectMenu ? renderProjectMenu() : null,
         taskModal ? renderTaskModal() : null,
         pomoSetup ? renderPomodoroSetup() : null,
         updatePanel ? renderUpdatePanel() : null,
         renderPomodoroFloat(),
         renderPomodoroCelebration(),
+        seriesPrompt ? renderSeriesPrompt() : null,
         renderCalendarStatusPopup(),
         actionNotice ? h('div', { className: 'lc-toast lc-toast-' + actionNotice.kind }, actionNotice.text) : null,
       );
@@ -8322,7 +9495,7 @@ body[data-ds-dark-theme] .lc-root .lc-md-view pre{background:#262626}
 .lc-detail-modal .lc-day-detail{height:auto;max-height:calc(100vh - 48px);padding:20px 22px;border-left:0;border-radius:10px;overflow:auto}
 .lc-detail-modal .lc-day-detail-head{margin-bottom:10px}
 .lc-detail-modal .lc-day-detail-title{font-size:18px;line-height:26px}
-.lc-modal-dialog{position:fixed;inset:0;width:100vw;height:100vh;max-width:100vw;max-height:100vh;margin:0;padding:24px;border:0;background:transparent;display:flex;align-items:center;justify-content:center;box-sizing:border-box;overflow:auto}
+.lc-modal-dialog{position:fixed;inset:0;z-index:100;width:100vw;height:100vh;max-width:100vw;max-height:100vh;margin:0;padding:24px;border:0;background:transparent;display:flex;align-items:center;justify-content:center;box-sizing:border-box;overflow:auto}
 .lc-modal-dialog::backdrop{background:rgba(0,0,0,.4)}
 .lc-modal{width:520px;max-width:100%;border-radius:8px;background:var(--td-bg-color-container);box-shadow:0 12px 40px rgba(0,0,0,.18);display:flex;flex-direction:column;max-height:calc(100vh - 48px);overflow:visible}
 .lc-modal-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:20px 24px 0}
@@ -8339,10 +9512,10 @@ body[data-ds-dark-theme] .lc-root .lc-md-view pre{background:#262626}
 .lc-task-modal-tab-active:after{content:'';position:absolute;left:10px;right:10px;bottom:-1px;height:2px;border-radius:2px 2px 0 0;background:var(--td-brand-color)}
 .lc-modal-body-batch{padding-top:14px;gap:12px;max-height:calc(100vh - 238px);overflow:auto}
 .lc-batch-textarea{min-height:138px!important;resize:vertical}
-.lc-batch-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:-4px}
+.lc-batch-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-top:-4px;flex-wrap:wrap}
 .lc-batch-count{font-size:12px;color:var(--td-text-color-secondary)}
 .lc-batch-identify{height:30px;padding:0 18px}
-.lc-batch-hint{font-size:12px;line-height:18px;color:var(--td-text-color-placeholder);margin-top:-4px}
+.lc-batch-hint{flex:1 1 200px;min-width:0;font-size:12px;line-height:18px;color:var(--td-text-color-placeholder);margin-top:-4px}
 .lc-batch-result{display:flex;flex-direction:column;gap:8px}
 .lc-batch-result-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-top:2px}
 .lc-batch-result-title{font-size:13px;font-weight:600;color:var(--td-text-color-primary)}
@@ -8788,6 +9961,8 @@ body[data-ds-dark-theme] .lc-root .lc-assign-toast-head{color:#f0d9a8}
 .lc-batch-rows{display:flex;flex-direction:column;gap:8px;max-height:260px;overflow:auto;margin-top:4px}
 .lc-batch-rows .lc-batch-row{flex-direction:row;align-items:center;gap:8px;padding:6px 8px}
 .lc-batch-rows .lc-batch-row .lc-input{flex:1 1 auto;min-width:0;height:30px;min-height:30px;font-size:12px}
+.lc-batch-time{flex:0 0 42px;text-align:center;font-size:11px;color:var(--td-text-color-secondary);font-variant-numeric:tabular-nums}
+.lc-batch-repeat{font-size:11px;color:var(--lc-brand-deep);background:var(--lc-brand-soft);border-radius:4px;padding:2px 6px;flex:0 0 auto;white-space:nowrap}
 .lc-batch-date{flex:0 0 140px!important;width:140px}
 .lc-batch-index{width:16px;flex:0 0 16px;text-align:right}
 .lc-day-detail-close{flex:0 0 auto}
@@ -8831,7 +10006,7 @@ body[data-ds-dark-theme] .lc-root .lc-assign-toast-head{color:#f0d9a8}
 .lc-tasks{flex:1 1 auto;display:grid;grid-template-columns:var(--lc-side-w,220px) 5px minmax(0,1fr) 5px var(--lc-detail-w,380px);min-width:0;min-height:0;height:100%;background:var(--td-bg-color-container);overflow:hidden}
 .lc-task-page{display:flex;flex-direction:column;width:100%;height:100%;min-width:0;min-height:0}
 .lc-task-top{flex:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:18px 24px 16px;background:var(--lc-brand);color:#fff;-webkit-app-region:drag;app-region:drag;user-select:none;-webkit-user-select:none}
-.lc-task-top-title{font:600 20px/28px var(--td-font-family);letter-spacing:.2px}
+.lc-task-top-title{display:flex;align-items:center;gap:8px;min-width:0;font:600 20px/28px var(--td-font-family);letter-spacing:.2px;overflow:hidden}
 .lc-task-top-main{min-width:0}
 .lc-task-top-sub{margin-top:3px;font:400 12px/18px var(--td-font-family);color:rgba(255,255,255,.78);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lc-task-top-stats{display:flex;align-items:baseline;gap:16px;font:400 12px/18px var(--td-font-family);color:rgba(255,255,255,.78);white-space:nowrap}
@@ -8839,7 +10014,7 @@ body[data-ds-dark-theme] .lc-root .lc-assign-toast-head{color:#f0d9a8}
 .lc-task-top-stats b{font:600 18px/22px var(--td-font-family);color:#fff;font-variant-numeric:tabular-nums}
 .lc-task-page .lc-tasks{height:auto;flex:1 1 auto;min-height:0}
 @media (max-width:720px){.lc-task-top{padding:14px 14px 12px;gap:10px}.lc-task-top-title{font-size:17px;line-height:24px}.lc-task-top-sub{font-size:11px;line-height:16px}.lc-task-top-stats{gap:10px;font-size:11px}.lc-task-top-stats b{font-size:16px}}
-.lc-task-side{min-width:0;min-height:0;overflow:auto;padding:20px 12px;background:var(--td-bg-color-container)}
+.lc-task-side{min-width:0;min-height:0;overflow-x:hidden;overflow-y:auto;scrollbar-gutter:stable;padding:20px 12px;background:var(--td-bg-color-container)}
 .lc-split{position:relative;z-index:3;cursor:col-resize;background:transparent;touch-action:none;outline:none}
 .lc-split:before{content:'';position:absolute;top:0;bottom:0;left:2px;width:1px;background:var(--td-component-stroke);transition:background .12s}
 .lc-split:hover:before,.lc-split:focus-visible:before,.lc-split:active:before{width:2px;left:1.5px;background:var(--td-brand-color)}
@@ -8860,6 +10035,53 @@ body.lc-col-resizing *{cursor:col-resize!important;user-select:none!important}
 .lc-task-side-item-active .lc-task-side-count{color:var(--td-brand-color)}
 .lc-task-side-title-cats{margin-top:18px;padding-top:16px;border-top:1px solid var(--td-component-stroke)}
 .lc-task-cat-nav .lc-task-side-item{height:34px}
+.lc-task-side-title-projects{display:flex;align-items:center;justify-content:space-between;margin-top:18px;padding-top:16px;border-top:1px solid var(--td-component-stroke)}
+.lc-project-add{display:inline-flex;align-items:center;justify-content:center;width:24px;height:24px;border:0;border-radius:6px;background:transparent;color:var(--td-text-color-secondary);cursor:pointer}
+.lc-project-add:hover{background:var(--td-brand-color-light);color:var(--td-brand-color)}
+.lc-project-nav .lc-task-side-item{height:38px;gap:8px;padding:0 8px}
+.lc-project-icon{display:inline-flex;align-items:center;justify-content:center;flex:0 0 22px;font-size:16px;line-height:1}
+.lc-project-name{font-size:13px;flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lc-project-deadline{flex:0 0 auto;font:400 10px/16px var(--td-font-family);color:var(--td-text-color-placeholder);font-variant-numeric:tabular-nums}
+.lc-task-side-item-active .lc-project-deadline{color:var(--td-brand-color)}
+.lc-project-item-over .lc-project-deadline{color:var(--td-error-color)}
+.lc-project-empty{padding:6px 10px 10px;font:400 12px/18px var(--td-font-family);color:var(--td-text-color-placeholder)}
+.lc-project-archived-toggle{display:flex;align-items:center;gap:5px;width:100%;height:28px;margin-top:4px;padding:0 8px;border:0;border-radius:6px;background:transparent;color:var(--td-text-color-placeholder);font:400 11px/18px var(--td-font-family);cursor:pointer}
+.lc-project-archived-toggle:hover{background:var(--td-bg-color-container-hover);color:var(--td-text-color-secondary)}
+.lc-project-archived-toggle.is-open{color:var(--td-text-color-secondary)}
+.lc-project-item-archived{opacity:.62}
+.lc-project-item-archived:hover{opacity:.82}
+.lc-task-top-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lc-task-top-archived{flex:0 0 auto;display:inline-flex;align-items:center;height:20px;padding:0 7px;border-radius:10px;background:rgba(255,255,255,.18);color:rgba(255,255,255,.9);font:500 10px/18px var(--td-font-family);letter-spacing:.2px}
+.lc-project-menu .lc-popup-head{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lc-project-dialog{max-width:100vw}
+.lc-project-modal{width:min(480px,calc(100vw - 40px));max-width:480px}
+.lc-project-form{gap:18px}
+.lc-project-icons{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;margin-top:8px}
+.lc-project-icon-option{display:flex;align-items:center;justify-content:center;height:34px;border:1px solid transparent;border-radius:8px;background:var(--td-bg-color-page,#f5f5f5);font-size:17px;line-height:1;cursor:pointer;transition:border-color .12s,background .12s,transform .12s}
+.lc-project-icon-option:hover{background:var(--td-bg-color-container-hover);transform:translateY(-1px)}
+.lc-project-icon-option.is-active{border-color:var(--td-brand-color);background:var(--td-brand-color-light);box-shadow:0 0 0 2px var(--td-brand-color-focus)}
+.lc-project-dates{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.lc-project-error{padding:8px 10px;border-radius:6px;background:var(--td-error-color-light);color:var(--td-error-color);font:400 12px/18px var(--td-font-family)}
+@media (max-width:720px){.lc-project-dialog{width:calc(100vw - 28px)}.lc-project-icons{grid-template-columns:repeat(8,1fr);gap:4px}.lc-project-icon-option{height:32px;font-size:16px}.lc-project-dates{grid-template-columns:1fr}}
+
+.lc-project-progress{margin:0 0 14px;padding:13px 16px 12px;border:1px solid #d7e7ff;border-radius:12px;background:#eef5ff;box-shadow:0 1px 2px rgba(47,124,246,.06)}
+.lc-project-progress.is-archived{opacity:.88}
+.lc-project-progress-head{display:flex;align-items:center;gap:10px}
+.lc-project-progress-name{display:flex;align-items:center;gap:7px;flex:1 1 auto;min-width:0}
+.lc-project-progress-icon{flex:0 0 auto;font-size:18px;line-height:1}
+.lc-project-progress-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 14px/20px var(--td-font-family);color:var(--td-text-color-primary)}
+.lc-project-progress-days{flex:0 0 auto;padding:2px 8px;border-radius:10px;background:var(--td-brand-color-light);color:var(--td-brand-color);font:500 11px/16px var(--td-font-family);white-space:nowrap}
+.lc-project-progress.is-archived .lc-project-progress-days{background:var(--td-bg-color-component);color:var(--td-text-color-secondary)}
+.lc-project-progress-dates{display:flex;justify-content:space-between;gap:12px;margin-top:5px;font:400 11px/16px var(--td-font-family);color:var(--td-text-color-placeholder);font-variant-numeric:tabular-nums}
+.lc-project-bar{position:relative;height:9px;margin:10px 0 7px;border-radius:999px;background:#e1e5ea;overflow:hidden}
+.lc-project-bar-elapsed{position:absolute;left:0;top:0;bottom:0;border-radius:999px;background:linear-gradient(90deg,var(--td-brand-color),#5b9bff);transition:width .3s ease}
+.lc-project-bar-today{position:absolute;top:-2px;bottom:-2px;width:2px;margin-left:-1px;background:var(--td-bg-color-container);box-shadow:0 0 0 1px rgba(15,23,42,.12);border-radius:1px}
+.lc-project-progress-meta{display:flex;justify-content:space-between;gap:12px;font:400 11px/16px var(--td-font-family);color:var(--td-text-color-placeholder);font-variant-numeric:tabular-nums}
+.lc-project-progress-note{margin-top:9px;padding-top:9px;border-top:1px dashed #cfe0f7;font:400 12px/18px var(--td-font-family);color:var(--td-text-color-secondary)}
+body[data-ds-dark-theme] .lc-project-progress{background:#1e2b3d;border-color:#2b4058;box-shadow:none}
+body[data-ds-dark-theme] .lc-project-progress-note{border-top-color:#31465f}
+body[data-ds-dark-theme] .lc-project-bar{background:#3c3c3c}
+@media (max-width:720px){.lc-project-progress{padding:12px 13px 11px;margin-bottom:12px}.lc-project-progress-dates{font-size:10px}.lc-project-progress-meta{flex-wrap:wrap;gap:2px 10px}.lc-project-progress-note{font-size:11px;line-height:17px}}
 .lc-task-cat-dot{flex:0 0 10px;width:10px;height:10px;border-radius:50%;background:var(--td-text-color-placeholder)}
 .lc-task-cat-dot-all{background:var(--td-brand-color)}
 .lc-task-cat-dot-none{background:#9aa3ad}
@@ -9080,6 +10302,28 @@ body[data-ds-dark-theme] .lc-root .lc-pomo-float{box-shadow:0 16px 44px rgba(0,0
 .lc-task-row:hover{background:var(--td-bg-color-container-hover,#f7f7f7)}
 .lc-task-row-active,.lc-task-row-active:hover{background:var(--td-brand-color-light)}
 .lc-task-check{flex:0 0 auto;width:17px;height:17px;margin:0;accent-color:var(--td-brand-color);cursor:pointer}
+.lc-task-row-cat .lc-task-check{-webkit-appearance:none;appearance:none;width:17px;height:17px;border:1.5px solid var(--lc-cat);border-radius:5px;background:transparent;position:relative;transition:background .15s,border-color .15s,box-shadow .15s}
+.lc-task-row-cat .lc-task-check:hover{border-color:var(--lc-cat);box-shadow:0 0 0 3px color-mix(in srgb,var(--lc-cat) 18%,transparent)}
+.lc-task-row-cat .lc-task-check:checked{background:var(--lc-cat);border-color:var(--lc-cat)}
+.lc-task-row-cat .lc-task-check:checked::after{content:'';position:absolute;left:4px;top:1px;width:6px;height:10px;border:solid #fff;border-width:0 2px 2px 0;transform:rotate(45deg)}
+.lc-task-row-cat .lc-task-check:focus-visible{outline:2px solid var(--lc-cat);outline-offset:2px}
+.lc-task-row-cat .lc-task-check:disabled{opacity:.55;cursor:default}
+.lc-task-repeat{flex:0 0 auto;display:inline-flex;color:var(--td-text-color-placeholder)}
+.lc-modal-repeat{display:flex;align-items:center;gap:6px;margin-top:8px;padding:7px 10px;border-radius:8px;background:var(--lc-brand-soft);color:var(--lc-brand-deep);font-size:12px}
+.lc-modal-repeat-clear{margin-left:auto;border:0;background:transparent;color:var(--lc-brand-deep);font-size:12px;cursor:pointer;padding:0}
+body[data-ds-dark-theme] .lc-root .lc-modal-repeat{background:rgba(47,124,246,.18);color:#9dbdff}
+.lc-series-mask{position:fixed;inset:0;z-index:90;background:rgba(15,23,42,.42);display:flex;align-items:center;justify-content:center;padding:20px}
+.lc-series-dialog{width:min(420px,calc(100vw - 32px));background:var(--td-bg-color-container);border-radius:14px;padding:22px;box-shadow:0 20px 60px rgba(15,23,42,.25);box-sizing:border-box}
+.lc-series-title{font-size:17px;font-weight:600;color:var(--td-text-color-primary);margin-bottom:10px}
+.lc-series-task{font-size:14px;font-weight:500;color:var(--td-text-color-primary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lc-series-rule{display:flex;align-items:center;gap:5px;margin-top:6px;font-size:12px;color:var(--lc-brand-deep)}
+.lc-series-copy{margin:14px 0 0;font-size:13px;line-height:1.7;color:var(--td-text-color-secondary)}
+.lc-series-error{margin-top:10px;font-size:12px;color:var(--td-error-color)}
+.lc-series-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:20px}
+body[data-ds-dark-theme] .lc-root .lc-series-dialog{background:#242424}
+body[data-ds-dark-theme] .lc-root .lc-series-rule{color:#9dbdff}
+body[data-ds-dark-theme] .lc-root .lc-task-row-cat .lc-task-check{background:transparent}
+body[data-ds-dark-theme] .lc-root .lc-task-row-cat .lc-task-check:checked{background:var(--lc-cat)}
 .lc-task-check-dropped{display:inline-flex;align-items:center;justify-content:center;border:1.5px solid #b9c0c8;border-radius:4px;background:#e3e6ea;color:#6f7782;box-sizing:border-box;cursor:default}
 .lc-task-check-dropped svg{display:block}
 body[data-ds-dark-theme] .lc-root .lc-task-check-dropped{background:#3a3a3a;border-color:#5f5f5f;color:#b8b8b8}
@@ -9495,10 +10739,9 @@ body[data-ds-dark-theme] .lc-day-event-external{background:rgba(255,255,255,.06)
 .lc-cat-dot{width:8px;height:8px;border-radius:50%;background:var(--lc-cat,#9aa3ad);flex:0 0 auto}
 .lc-detail-category{padding-left:8px}
 .lc-detail-cat-name{max-width:58px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.lc-batch-cat{display:flex;align-items:center;gap:6px;font:400 12px/18px var(--td-font-family);color:var(--td-text-color-secondary)}
+.lc-batch-cat{display:flex;align-items:center;gap:6px;flex:0 0 auto;white-space:nowrap;font:400 12px/18px var(--td-font-family);color:var(--td-text-color-secondary)}
 .lc-batch-cat-select{width:104px;height:32px!important;padding:0 8px!important}
-.lc-task-row-cat{box-shadow:inset 3px 0 0 var(--lc-cat)}
-.lc-task-row-cat.lc-task-row-active{box-shadow:inset 3px 0 0 var(--lc-cat)}
+
 .lc-cal-task-cat{background:var(--lc-cat-bg);box-shadow:inset 3px 0 0 var(--lc-cat)}
 .lc-cal-task-cat .lc-cal-task-link,.lc-cal-task-cat .lc-cal-task-title{color:var(--td-text-color-primary)}
 .lc-cal-task-cat.lc-cal-task-done{background:var(--lc-cat-bg)}
@@ -9550,9 +10793,17 @@ body[data-ds-dark-theme] .lc-root .lc-scrolling::-webkit-scrollbar-thumb:hover{b
 .lc-settings-detail > .lc-settings-card{display:none}
 .lc-settings-detail[data-active-settings="categories"] > .lc-settings-card:nth-child(1),
 .lc-settings-detail[data-active-settings="day-range"] > .lc-settings-card:nth-child(2),
-.lc-settings-detail[data-active-settings="local-calendar"] > .lc-settings-card:nth-child(3),
-.lc-settings-detail[data-active-settings="data"] > .lc-settings-card:nth-child(4),
-.lc-settings-detail[data-active-settings="obsidian"] > .lc-settings-card:nth-child(5){display:block}
+.lc-settings-detail[data-active-settings="default-view"] > .lc-settings-card:nth-child(3),
+.lc-settings-detail[data-active-settings="local-calendar"] > .lc-settings-card:nth-child(4),
+.lc-settings-detail[data-active-settings="data"] > .lc-settings-card:nth-child(5),
+.lc-settings-detail[data-active-settings="obsidian"] > .lc-settings-card:nth-child(6){display:block}
+.lc-default-view-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin-top:14px}
+.lc-default-view-option{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:7px;min-height:76px;padding:10px 8px;border:1px solid var(--td-component-stroke);border-radius:10px;background:var(--td-bg-color-container);color:var(--td-text-color-secondary);font:500 13px/18px var(--td-font-family);cursor:pointer;transition:border-color .15s,background .15s,color .15s}
+.lc-default-view-option:hover{border-color:var(--td-brand-color);color:var(--td-text-color-primary)}
+.lc-default-view-option.is-active{border-color:var(--td-brand-color);background:var(--td-brand-color-light);color:var(--td-brand-color)}
+.lc-default-view-option:focus-visible{outline:2px solid var(--td-brand-color);outline-offset:2px}
+.lc-default-view-option:disabled{opacity:.6;cursor:default}
+@media (max-width:720px){.lc-default-view-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .lc-settings-badge{flex:0 0 auto;padding:2px 7px;border-radius:5px;background:var(--td-brand-color-light);color:var(--td-brand-color);font:500 10px/16px var(--td-font-family)}
 .lc-obsidian-enable{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:14px;padding:10px 12px;border:1px solid var(--td-component-stroke);border-radius:8px;background:var(--td-bg-color-page)}
 .lc-obsidian-enable > div{display:flex;flex-direction:column;gap:2px;min-width:0}
