@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const { useState, useEffect, useRef, useCallback } = React;
 
-    const APP_VERSION = '0.3.1';
+    const APP_VERSION = '0.3.2';
     const HEADERS = { 'x-calendar-client': '1' };
     const ORDER_KEY = 'dsh-calendar-task-order-v1';
     const TIMES_KEY = 'dsh-calendar-task-times-v1';
@@ -1168,6 +1168,10 @@ window.__ModuleLoader__.load({
       const [projectBusy, setProjectBusy] = useState(false);
       const [projectMenu, setProjectMenu] = useState(null);
       const [projectArchivedOpen, setProjectArchivedOpen] = useState(false);
+      const [milestones, setMilestones] = useState([]);
+      const [milestonesLoading, setMilestonesLoading] = useState(false);
+      const [milestoneModal, setMilestoneModal] = useState(null);
+      const [milestoneBusy, setMilestoneBusy] = useState(false);
       const [categoryBusy, setCategoryBusy] = useState('');
       const [calendarMode, setCalendarMode] = useState('day');
       const [calendarMonth, setCalendarMonth] = useState(() => {
@@ -1745,6 +1749,30 @@ window.__ModuleLoader__.load({
       }, [projects, projectId]);
 
       useEffect(() => {
+        if (activeView !== 'tasks' || !projectId) {
+          setMilestones([]);
+          setMilestonesLoading(false);
+          return undefined;
+        }
+        let cancelled = false;
+        setMilestones([]);
+        setMilestonesLoading(true);
+        api('/calendar/api/milestones?projectId=' + encodeURIComponent(projectId))
+          .then((data) => {
+            if (!cancelled) setMilestones(data.milestones || []);
+          })
+          .catch(() => {
+            if (!cancelled) setMilestones([]);
+          })
+          .finally(() => {
+            if (!cancelled) setMilestonesLoading(false);
+          });
+        return () => {
+          cancelled = true;
+        };
+      }, [activeView, projectId]);
+
+      useEffect(() => {
         if (!taskCategoryId || taskCategoryId === 'none') return;
         if (!categories.some((category) => String(category.id) === String(taskCategoryId))) {
           setTaskCategoryId(null);
@@ -1855,6 +1883,86 @@ window.__ModuleLoader__.load({
           endDate: dateKeyOf(end),
           error: '',
         });
+      };
+
+      const openMilestoneModal = (project, date, milestone) => {
+        if (!project) return;
+        const clampDate = (key) => {
+          if (key && key >= project.startDate && key <= project.endDate) return key;
+          const today = todayKey();
+          if (today < project.startDate) return project.startDate;
+          if (today > project.endDate) return project.endDate;
+          return today;
+        };
+        setMilestoneModal({
+          mode: milestone ? 'edit' : 'create',
+          id: milestone ? milestone.id : null,
+          projectId: project.id,
+          projectName: project.name,
+          startDate: project.startDate,
+          endDate: project.endDate,
+          name: milestone ? milestone.name : '',
+          date: clampDate(milestone ? milestone.date : date),
+          error: '',
+        });
+      };
+
+      const submitMilestone = async () => {
+        if (!milestoneModal || milestoneBusy) return;
+        const name = String(milestoneModal.name || '').trim();
+        const date = String(milestoneModal.date || '');
+        if (!name) {
+          setMilestoneModal((prev) => (prev ? Object.assign({}, prev, { error: '请填写节点名称' }) : prev));
+          return;
+        }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+          setMilestoneModal((prev) => (prev ? Object.assign({}, prev, { error: '请选择节点日期' }) : prev));
+          return;
+        }
+        if (date < milestoneModal.startDate || date > milestoneModal.endDate) {
+          setMilestoneModal((prev) => (prev ? Object.assign({}, prev, { error: '节点日期需在项目起止日期内' }) : prev));
+          return;
+        }
+        setMilestoneBusy(true);
+        try {
+          const editing = milestoneModal.mode === 'edit' && milestoneModal.id;
+          const res = await api(editing ? '/calendar/api/milestone-update' : '/calendar/api/milestone-create', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify(
+              editing
+                ? { id: milestoneModal.id, name, date }
+                : { projectId: milestoneModal.projectId, name, date },
+            ),
+          });
+          setMilestones(res.milestones || []);
+          setMilestoneModal(null);
+          showNotice(editing ? '已保存节点「' + name + '」' : '已添加节点「' + name + '」', 'success');
+        } catch (error) {
+          setMilestoneModal((prev) => (prev ? Object.assign({}, prev, { error: error.message }) : prev));
+        } finally {
+          setMilestoneBusy(false);
+        }
+      };
+
+      const deleteMilestone = async (milestone) => {
+        if (!milestone || milestoneBusy) return;
+        if (!window.confirm('删除节点「' + milestone.name + '」？')) return;
+        setMilestoneBusy(true);
+        try {
+          const res = await api('/calendar/api/milestone-delete', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ id: milestone.id }),
+          });
+          setMilestones(res.milestones || []);
+          setMilestoneModal(null);
+          showNotice('已删除节点「' + milestone.name + '」', 'success');
+        } catch (error) {
+          setMilestoneModal((prev) => (prev ? Object.assign({}, prev, { error: error.message }) : prev));
+        } finally {
+          setMilestoneBusy(false);
+        }
       };
 
       const submitProject = async () => {
@@ -5062,6 +5170,103 @@ window.__ModuleLoader__.load({
         );
       };
 
+      const renderMilestoneModal = () => {
+        if (!milestoneModal) return null;
+        const setField = (patch) => setMilestoneModal((prev) => (prev ? Object.assign({}, prev, patch) : prev));
+        const close = () => setMilestoneModal(null);
+        const editing = milestoneModal.mode === 'edit' && milestoneModal.id;
+        return h(
+          'dialog',
+          {
+            className: 'lc-modal-dialog lc-milestone-dialog',
+            'aria-label': editing ? '编辑节点' : '新增节点',
+            onCancel: (event) => {
+              event.preventDefault();
+              close();
+            },
+          },
+          h(
+            'form',
+            {
+              className: 'lc-modal lc-milestone-modal',
+              onSubmit: (event) => {
+                event.preventDefault();
+                submitMilestone();
+              },
+            },
+            h(
+              'div',
+              { className: 'lc-modal-head' },
+              h('span', { className: 'lc-modal-title' }, editing ? '编辑节点' : '新增节点'),
+              h(
+                'button',
+                { className: 'lc-modal-close', type: 'button', title: '关闭', 'aria-label': '关闭', onClick: close },
+                h(GlyphIcon, { name: 'close', size: 16 }),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'lc-modal-body lc-milestone-form' },
+              h(
+                'div',
+                { className: 'lc-milestone-target' },
+                h('span', null, '添加到「' + milestoneModal.projectName + '」的进度条'),
+              ),
+              h(
+                'label',
+                { className: 'lc-field' },
+                h('span', { className: 'lc-field-label' }, '节点名称'),
+                h('input', {
+                  className: 'lc-input',
+                  type: 'text',
+                  value: milestoneModal.name,
+                  maxLength: 40,
+                  autoFocus: true,
+                  placeholder: '例如：设计定稿',
+                  onChange: (event) => setField({ name: event.target.value }),
+                }),
+              ),
+              h(
+                'label',
+                { className: 'lc-field' },
+                h('span', { className: 'lc-field-label' }, '节点日期'),
+                h('input', {
+                  className: 'lc-input',
+                  type: 'date',
+                  value: milestoneModal.date,
+                  min: milestoneModal.startDate,
+                  max: milestoneModal.endDate,
+                  onChange: (event) => setField({ date: event.target.value }),
+                }),
+              ),
+              milestoneModal.error ? h('div', { className: 'lc-project-error' }, milestoneModal.error) : null,
+            ),
+            h(
+              'div',
+              { className: 'lc-modal-foot' },
+              editing
+                ? h(
+                    'button',
+                    {
+                      type: 'button',
+                      className: 'lc-btn lc-btn-danger lc-milestone-delete',
+                      disabled: milestoneBusy,
+                      onClick: () => deleteMilestone({ id: milestoneModal.id, name: milestoneModal.name }),
+                    },
+                    '删除节点',
+                  )
+                : null,
+              h('button', { type: 'button', className: 'lc-btn', onClick: close }, '取消'),
+              h(
+                'button',
+                { type: 'submit', className: 'lc-btn lc-btn-primary', disabled: milestoneBusy },
+                milestoneBusy ? '保存中…' : editing ? '保存' : '添加节点',
+              ),
+            ),
+          ),
+        );
+      };
+
       const renderProjectMenu = () => {
         if (!projectMenu) return null;
         const width = 184;
@@ -6089,7 +6294,8 @@ window.__ModuleLoader__.load({
                     'div',
                     {
                       className: 'lc-project-bar',
-                      role: 'img',
+                      role: 'group',
+                      title: '双击进度条添加节点',
                       'aria-label':
                         '项目时间进度 ' +
                         Math.round(projectProgress.timePct * 100) +
@@ -6097,7 +6303,15 @@ window.__ModuleLoader__.load({
                         projectProgress.elapsed +
                         ' 天，共 ' +
                         projectProgress.span +
-                        ' 天',
+                        ' 天；双击可添加节点',
+                      onDoubleClick: (event) => {
+                        const rect = event.currentTarget.getBoundingClientRect();
+                        const ratio = rect.width > 0 ? clamp((event.clientX - rect.left) / rect.width, 0, 1) : 0;
+                        const offset = Math.round(ratio * projectProgress.span);
+                        const date = new Date(String(selectedProject.startDate) + 'T00:00:00');
+                        date.setDate(date.getDate() + offset);
+                        openMilestoneModal(selectedProject, dateKeyOf(date));
+                      },
                     },
                     h('span', {
                       className: 'lc-project-bar-elapsed',
@@ -6110,6 +6324,29 @@ window.__ModuleLoader__.load({
                           title: '今天',
                         })
                       : null,
+                    milestones.map((milestone) => {
+                      const start = new Date(String(selectedProject.startDate) + 'T00:00:00');
+                      const when = new Date(String(milestone.date) + 'T00:00:00');
+                      const pct = Number.isNaN(start.getTime()) || Number.isNaN(when.getTime())
+                        ? 0
+                        : clamp((when - start) / 86400000 / projectProgress.span, 0, 1);
+                      return h(
+                        'button',
+                        {
+                          key: 'milestone-' + milestone.id,
+                          type: 'button',
+                          className: 'lc-project-milestone',
+                          style: { left: pct * 100 + '%' },
+                          title: milestone.name + ' · ' + projectDateText(milestone.date),
+                          'aria-label': '节点 ' + milestone.name + '，' + projectDateText(milestone.date),
+                          onClick: (event) => {
+                            event.stopPropagation();
+                            openMilestoneModal(selectedProject, milestone.date, milestone);
+                          },
+                          onDoubleClick: (event) => event.stopPropagation(),
+                        },
+                      );
+                    }),
                   ),
                   h(
                     'div',
@@ -8936,6 +9173,7 @@ window.__ModuleLoader__.load({
         ),
         matrixDetailOpen && dayTaskId ? renderMatrixDetailModal() : null,
         projectModal ? renderProjectModal() : null,
+        milestoneModal ? renderMilestoneModal() : null,
         projectMenu ? renderProjectMenu() : null,
         taskModal ? renderTaskModal() : null,
         pomoSetup ? renderPomodoroSetup() : null,
@@ -10073,11 +10311,19 @@ body.lc-col-resizing *{cursor:col-resize!important;user-select:none!important}
 .lc-project-progress-days{flex:0 0 auto;padding:2px 8px;border-radius:10px;background:var(--td-brand-color-light);color:var(--td-brand-color);font:500 11px/16px var(--td-font-family);white-space:nowrap}
 .lc-project-progress.is-archived .lc-project-progress-days{background:var(--td-bg-color-component);color:var(--td-text-color-secondary)}
 .lc-project-progress-dates{display:flex;justify-content:space-between;gap:12px;margin-top:5px;font:400 11px/16px var(--td-font-family);color:var(--td-text-color-placeholder);font-variant-numeric:tabular-nums}
-.lc-project-bar{position:relative;height:9px;margin:10px 0 7px;border-radius:999px;background:#e1e5ea;overflow:hidden}
+.lc-project-bar{position:relative;height:9px;margin:10px 0 7px;border-radius:999px;background:#e1e5ea;overflow:visible;user-select:none}
 .lc-project-bar-elapsed{position:absolute;left:0;top:0;bottom:0;border-radius:999px;background:linear-gradient(90deg,var(--td-brand-color),#5b9bff);transition:width .3s ease}
-.lc-project-bar-today{position:absolute;top:-2px;bottom:-2px;width:2px;margin-left:-1px;background:var(--td-bg-color-container);box-shadow:0 0 0 1px rgba(15,23,42,.12);border-radius:1px}
+.lc-project-bar-today{position:absolute;top:-2px;bottom:-2px;width:2px;margin-left:-1px;background:var(--td-text-color-primary);opacity:.45;border-radius:1px;z-index:1}
+.lc-project-milestone{position:absolute;top:50%;width:13px;height:13px;padding:0;border:2px solid var(--td-bg-color-container);border-radius:50%;background:var(--td-brand-color);box-shadow:0 1px 4px rgba(15,23,42,.28);transform:translate(-50%,-50%);cursor:pointer;z-index:2;transition:transform .12s ease,box-shadow .12s ease}
+.lc-project-milestone:hover,.lc-project-milestone:focus-visible{transform:translate(-50%,-50%) scale(1.28);box-shadow:0 2px 7px rgba(15,23,42,.32);outline:none}
+.lc-project-milestone:focus-visible{box-shadow:0 0 0 3px var(--td-brand-color-light)}
 .lc-project-progress-meta{display:flex;justify-content:space-between;gap:12px;font:400 11px/16px var(--td-font-family);color:var(--td-text-color-placeholder);font-variant-numeric:tabular-nums}
 .lc-project-progress-note{margin-top:9px;padding-top:9px;border-top:1px dashed #cfe0f7;font:400 12px/18px var(--td-font-family);color:var(--td-text-color-secondary)}
+.lc-milestone-dialog{max-width:100vw}
+.lc-milestone-modal{width:min(380px,calc(100vw - 28px))}
+.lc-milestone-target{margin-bottom:2px;color:var(--td-text-color-secondary);font:400 12px/18px var(--td-font-family)}
+.lc-milestone-form .lc-field+.lc-field{margin-top:12px}
+.lc-milestone-delete{margin-right:auto}
 body[data-ds-dark-theme] .lc-project-progress{background:#1e2b3d;border-color:#2b4058;box-shadow:none}
 body[data-ds-dark-theme] .lc-project-progress-note{border-top-color:#31465f}
 body[data-ds-dark-theme] .lc-project-bar{background:#3c3c3c}
