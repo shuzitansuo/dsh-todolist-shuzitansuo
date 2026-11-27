@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const { useState, useEffect, useRef, useCallback } = React;
 
-    const APP_VERSION = '0.3.3';
+    const APP_VERSION = '0.3.4';
     const HEADERS = { 'x-calendar-client': '1' };
     const ORDER_KEY = 'dsh-calendar-task-order-v1';
     const TIMES_KEY = 'dsh-calendar-task-times-v1';
@@ -2173,9 +2173,43 @@ window.__ModuleLoader__.load({
         const parent = el && el.parentElement;
         if (!el || !parent) return undefined;
         let frame = 0;
+        const findPaddedHost = () => {
+          let node = parent;
+          for (let depth = 0; node && depth < 6; depth += 1, node = node.parentElement) {
+            if (node === document.body || node === document.documentElement) break;
+            const style = getComputedStyle(node);
+            const padTop = parseFloat(style.paddingTop) || 0;
+            const padRight = parseFloat(style.paddingRight) || 0;
+            const padBottom = parseFloat(style.paddingBottom) || 0;
+            const padLeft = parseFloat(style.paddingLeft) || 0;
+            // Ignore a top-only inset: that is the window titlebar clearance.
+            if (padLeft + padRight + padBottom > 0) return node;
+          }
+          return null;
+        };
         const fit = () => {
           frame = 0;
           if (!el.isConnected || !parent.isConnected) return;
+          const host = findPaddedHost();
+          if (host) {
+            // Some hosts wrap the plugin slot in a padded page; pull the plugin out
+            // to the host's padding box so it meets all four edges.
+            const hostStyle = getComputedStyle(host);
+            const left = parseFloat(hostStyle.paddingLeft) || 0;
+            const top = parseFloat(hostStyle.paddingTop) || 0;
+            const width = host.clientWidth;
+            const height = host.clientHeight;
+            const cancelTop = Math.abs(top - 48) < 4 ? 0 : top;
+            if (!width || !height) return;
+            el.style.maxWidth = 'none';
+            el.style.width = width + 'px';
+            el.style.height = height + 'px';
+            el.style.margin = `${-cancelTop}px 0 0 ${-left}px`;
+            return;
+          }
+          el.style.margin = '0';
+          el.style.maxWidth = '100%';
+          el.style.height = '';
           const rect = el.getBoundingClientRect();
           const parentWidth = parent.clientWidth;
           const viewportWidth = Math.max(0, window.innerWidth - Math.max(0, rect.left));
