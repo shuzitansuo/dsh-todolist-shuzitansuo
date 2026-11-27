@@ -5,7 +5,7 @@ window.__ModuleLoader__.load({
     const h = React.createElement;
     const { useState, useEffect, useRef, useCallback } = React;
 
-    const APP_VERSION = '0.3.2';
+    const APP_VERSION = '0.3.3';
     const HEADERS = { 'x-calendar-client': '1' };
     const ORDER_KEY = 'dsh-calendar-task-order-v1';
     const TIMES_KEY = 'dsh-calendar-task-times-v1';
@@ -13,6 +13,7 @@ window.__ModuleLoader__.load({
     const NONWORK_KEY = 'dsh-calendar-show-nonwork-v1';
     const TASK_COLS_KEY = 'dsh-calendar-task-cols-v1';
     const COLLAPSED_GROUPS_KEY = 'dsh-calendar-collapsed-groups-v1';
+    const MILESTONE_ALERT_SEEN_KEY = 'dsh-calendar-milestone-alerts-seen-v1';
     const DAY_DETAIL_W_KEY = 'dsh-calendar-day-detail-w-v1';
     const POMO_ACTIVE_KEY = 'dsh-calendar-pomodoro-active-v1';
     const POMO_PRESETS = [25, 30, 45];
@@ -1172,6 +1173,7 @@ window.__ModuleLoader__.load({
       const [milestonesLoading, setMilestonesLoading] = useState(false);
       const [milestoneModal, setMilestoneModal] = useState(null);
       const [milestoneBusy, setMilestoneBusy] = useState(false);
+      const [milestoneAlerts, setMilestoneAlerts] = useState([]);
       const [categoryBusy, setCategoryBusy] = useState('');
       const [calendarMode, setCalendarMode] = useState('day');
       const [calendarMonth, setCalendarMonth] = useState(() => {
@@ -1773,6 +1775,38 @@ window.__ModuleLoader__.load({
       }, [activeView, projectId]);
 
       useEffect(() => {
+        const checkUpcoming = async () => {
+          const today = todayKey();
+          try {
+            const data = await api(
+              '/calendar/api/milestones/upcoming?today=' + encodeURIComponent(today) + '&days=3',
+            );
+            let seen = {};
+            try {
+              const raw = JSON.parse(localStorage.getItem(MILESTONE_ALERT_SEEN_KEY) || '{}');
+              if (raw && typeof raw === 'object') seen = raw;
+            } catch {
+              seen = {};
+            }
+            const fresh = (data.milestones || []).filter((m) => seen[String(m.id) + ':' + m.date] !== today);
+            setMilestoneAlerts(fresh);
+          } catch {
+            setMilestoneAlerts([]);
+          }
+        };
+        checkUpcoming();
+        const timer = window.setInterval(checkUpcoming, 60 * 1000);
+        const onFocus = () => {
+          checkUpcoming();
+        };
+        window.addEventListener('focus', onFocus);
+        return () => {
+          window.clearInterval(timer);
+          window.removeEventListener('focus', onFocus);
+        };
+      }, []);
+
+      useEffect(() => {
         if (!taskCategoryId || taskCategoryId === 'none') return;
         if (!categories.some((category) => String(category.id) === String(taskCategoryId))) {
           setTaskCategoryId(null);
@@ -1963,6 +1997,44 @@ window.__ModuleLoader__.load({
         } finally {
           setMilestoneBusy(false);
         }
+      };
+
+      const markMilestoneAlertsSeen = () => {
+        if (!milestoneAlerts.length) return;
+        const today = todayKey();
+        let seen = {};
+        try {
+          const raw = JSON.parse(localStorage.getItem(MILESTONE_ALERT_SEEN_KEY) || '{}');
+          if (raw && typeof raw === 'object') seen = raw;
+        } catch {
+          seen = {};
+        }
+        const next = {};
+        Object.keys(seen).forEach((key) => {
+          if (seen[key] === today) next[key] = today;
+        });
+        milestoneAlerts.forEach((milestone) => {
+          next[String(milestone.id) + ':' + milestone.date] = today;
+        });
+        try {
+          localStorage.setItem(MILESTONE_ALERT_SEEN_KEY, JSON.stringify(next));
+        } catch {
+          /* ignore */
+        }
+      };
+
+      const closeMilestoneAlerts = () => {
+        markMilestoneAlertsSeen();
+        setMilestoneAlerts([]);
+      };
+
+      const openMilestoneAlertProject = (milestone) => {
+        markMilestoneAlertsSeen();
+        setMilestoneAlerts([]);
+        setTaskFilter('today');
+        setTaskCategoryId(null);
+        setProjectId(milestone.projectId);
+        setActiveView('tasks');
       };
 
       const submitProject = async () => {
@@ -5165,6 +5237,106 @@ window.__ModuleLoader__.load({
                 { type: 'submit', className: 'lc-btn lc-btn-primary', disabled: projectBusy },
                 projectBusy ? (projectModal.mode === 'edit' ? '保存中…' : '创建中…') : projectModal.mode === 'edit' ? '保存' : '创建项目',
               ),
+            ),
+          ),
+        );
+      };
+
+      const renderMilestoneAlert = () => {
+        if (!milestoneAlerts.length) return null;
+        if (
+          taskModal ||
+          projectModal ||
+          milestoneModal ||
+          seriesPrompt ||
+          matrixDetailOpen ||
+          dayTaskId ||
+          (updatePanel && updatePanel.open)
+        ) {
+          return null;
+        }
+        const today = todayKey();
+        const daysText = (date) => {
+          const diff = Math.round(
+            (new Date(String(date) + 'T00:00:00') - new Date(today + 'T00:00:00')) / 86400000,
+          );
+          if (diff < 0) return '已过 ' + Math.abs(diff) + ' 天';
+          if (diff === 0) return '今天';
+          if (diff === 1) return '明天';
+          return '还有 ' + diff + ' 天';
+        };
+        return h(
+          'div',
+          {
+            className: 'lc-detail-mask lc-milestone-alert-mask',
+            role: 'dialog',
+            'aria-modal': 'true',
+            'aria-labelledby': 'lc-milestone-alert-title',
+            onClick: (event) => {
+              if (event.target === event.currentTarget) closeMilestoneAlerts();
+            },
+          },
+          h(
+            'div',
+            { className: 'lc-modal lc-milestone-alert-modal' },
+            h(
+              'div',
+              { className: 'lc-milestone-alert-head' },
+              h(
+                'div',
+                { className: 'lc-milestone-alert-heading' },
+                h('div', { className: 'lc-milestone-alert-title', id: 'lc-milestone-alert-title' }, '项目节点提醒'),
+                h(
+                  'div',
+                  { className: 'lc-milestone-alert-sub' },
+                  '有 ' + milestoneAlerts.length + ' 个节点快到了，提前安排一下。',
+                ),
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  className: 'lc-modal-close',
+                  title: '关闭',
+                  'aria-label': '关闭',
+                  onClick: closeMilestoneAlerts,
+                },
+                h(GlyphIcon, { name: 'close', size: 16 }),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'lc-milestone-alert-list' },
+              milestoneAlerts.map((milestone) =>
+                h(
+                  'button',
+                  {
+                    key: 'milestone-alert-' + milestone.id + '-' + milestone.date,
+                    type: 'button',
+                    className: 'lc-milestone-alert-row',
+                    onClick: () => openMilestoneAlertProject(milestone),
+                    title: '打开项目「' + milestone.projectName + '」',
+                  },
+                  h('span', { className: 'lc-milestone-alert-icon' }, milestone.projectIcon || '📁'),
+                  h(
+                    'span',
+                    { className: 'lc-milestone-alert-main' },
+                    h('span', { className: 'lc-milestone-alert-project' }, milestone.projectName),
+                    h('span', { className: 'lc-milestone-alert-name' }, milestone.name),
+                    h(
+                      'span',
+                      { className: 'lc-milestone-alert-date' },
+                      projectDateText(milestone.date) + ' · ' + daysText(milestone.date),
+                    ),
+                  ),
+                  h('span', { className: 'lc-milestone-alert-go' }, '查看'),
+                ),
+              ),
+            ),
+            h(
+              'div',
+              { className: 'lc-milestone-alert-foot' },
+              h('button', { type: 'button', className: 'lc-btn lc-btn-primary', onClick: closeMilestoneAlerts }, '知道了'),
             ),
           ),
         );
@@ -9174,6 +9346,7 @@ window.__ModuleLoader__.load({
         matrixDetailOpen && dayTaskId ? renderMatrixDetailModal() : null,
         projectModal ? renderProjectModal() : null,
         milestoneModal ? renderMilestoneModal() : null,
+        renderMilestoneAlert(),
         projectMenu ? renderProjectMenu() : null,
         taskModal ? renderTaskModal() : null,
         pomoSetup ? renderPomodoroSetup() : null,
@@ -10324,6 +10497,23 @@ body.lc-col-resizing *{cursor:col-resize!important;user-select:none!important}
 .lc-milestone-target{margin-bottom:2px;color:var(--td-text-color-secondary);font:400 12px/18px var(--td-font-family)}
 .lc-milestone-form .lc-field+.lc-field{margin-top:12px}
 .lc-milestone-delete{margin-right:auto}
+.lc-milestone-alert-mask{z-index:120}
+.lc-milestone-alert-modal{width:min(440px,100%);overflow:hidden;border-radius:14px}
+.lc-milestone-alert-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;padding:20px 22px 14px;border-bottom:1px solid var(--td-component-stroke)}
+.lc-milestone-alert-heading{min-width:0}
+.lc-milestone-alert-title{font:600 16px/24px var(--td-font-family);color:var(--td-text-color-primary)}
+.lc-milestone-alert-sub{margin-top:3px;font:400 12px/18px var(--td-font-family);color:var(--td-text-color-secondary)}
+.lc-milestone-alert-list{display:flex;flex-direction:column;gap:8px;padding:12px 14px;max-height:min(50vh,380px);overflow:auto}
+.lc-milestone-alert-row{display:flex;align-items:center;gap:11px;width:100%;padding:11px 12px;border:1px solid var(--td-component-stroke);border-radius:10px;background:var(--td-bg-color-page);color:var(--td-text-color-primary);font-family:var(--td-font-family);text-align:left;cursor:pointer;transition:border-color .12s,background-color .12s}
+.lc-milestone-alert-row:hover{border-color:var(--td-brand-color);background:var(--td-brand-color-light)}
+.lc-milestone-alert-icon{flex:0 0 auto;font-size:22px;line-height:1}
+.lc-milestone-alert-main{display:flex;flex-direction:column;min-width:0;flex:1 1 auto;gap:1px}
+.lc-milestone-alert-project{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:400 11px/16px var(--td-font-family);color:var(--td-text-color-placeholder)}
+.lc-milestone-alert-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:600 14px/20px var(--td-font-family)}
+.lc-milestone-alert-date{font:400 11px/16px var(--td-font-family);color:var(--td-text-color-secondary);font-variant-numeric:tabular-nums}
+.lc-milestone-alert-go{flex:0 0 auto;color:var(--td-brand-color);font:500 11px/16px var(--td-font-family)}
+.lc-milestone-alert-foot{display:flex;justify-content:flex-end;padding:4px 20px 20px}
+@media (max-width:720px){.lc-milestone-alert-modal{width:min(440px,calc(100vw - 28px))}.lc-milestone-alert-head{padding:18px 18px 12px}.lc-milestone-alert-list{padding:10px 12px}.lc-milestone-alert-foot{padding:2px 18px 18px}}
 body[data-ds-dark-theme] .lc-project-progress{background:#1e2b3d;border-color:#2b4058;box-shadow:none}
 body[data-ds-dark-theme] .lc-project-progress-note{border-top-color:#31465f}
 body[data-ds-dark-theme] .lc-project-bar{background:#3c3c3c}

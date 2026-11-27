@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Task calendar",
-    "description": "Local task calendar, Pomodoro timer and review: projects with editing, archiving and milestones, task categories and colored checkboxes, task lists, Kanban board, week/month/day calendar, urgent/important matrix, content-aware KISS retrospective, free-form reflections, a 48-cell daily time strip, subtask checklists, focus statistics, configurable day-view hours, read-only macOS Calendar event sync, and today’s tasks plus review (focus time, Pomodoro count, KISS retrospective and reflections) written to a local Obsidian daily note. All data stays in local SQLite.",
+    "description": "Local task calendar, Pomodoro timer and review: projects with editing, archiving, milestones and milestone reminders, task categories and colored checkboxes, task lists, Kanban board, week/month/day calendar, urgent/important matrix, content-aware KISS retrospective, free-form reflections, a 48-cell daily time strip, subtask checklists, focus statistics, configurable day-view hours, read-only macOS Calendar event sync, and today’s tasks plus review (focus time, Pomodoro count, KISS retrospective and reflections) written to a local Obsidian daily note. All data stays in local SQLite.",
     "detail": "docs/DETAIL.md"
   }
 }
